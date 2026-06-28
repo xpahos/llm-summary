@@ -248,6 +248,12 @@ class OpenAISummarizer:
                 "state": obj.get("state"),
                 "merged": obj.get("merged"),
                 "merge_status": obj.get("merge_status"),
+                "changed_files": [
+                    f.get("filename") for f in obj.get("files", []) if f.get("filename")
+                ][:80],
+                "commits": [
+                    (c.get("message") or "").split("\n", 1)[0] for c in obj.get("commits", [])
+                ][:50],
             },
         }
         guidance = (
@@ -257,8 +263,9 @@ class OpenAISummarizer:
             "captures what the change does and the prior discussion (comments, reviews, "
             "concerns, decisions) — preserve that and fold the new event into it, only dropping "
             "details that the event makes obsolete. A 'closed' or 'merged' event must NOT "
-            "replace the summary with just 'the PR was closed/merged'; keep the description of "
-            "the code change and the discussion and add the outcome (and the reason, if "
+            "replace the summary with just 'the PR was closed/merged': keep the description of "
+            "the code change, reflect the files/packages affected (object.changed_files / "
+            "commits), keep the discussion, and add the outcome (and the reason, if "
             "discernible). For a 'commented' / 'reviewed' / 'review_comment' event, incorporate "
             "the substance of what was said. For 'pr_head_updated', fold in the diff_summary.\n"
             "If the event is a review or the object has merge_status, reflect the current "

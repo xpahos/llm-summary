@@ -182,11 +182,22 @@ class Pipeline:
         with transaction(self.conn):
             for ev in rows:
                 ev = dict(ev)
-                obj = self._object_snapshot(ev["repo"], ev["object_kind"], ev["object_number"])
-                ms = self._merge_status_for(ev["object_kind"], ev["object_number"])
+                kind, number = ev["object_kind"], ev["object_number"]
+                obj = self._object_snapshot(ev["repo"], kind, number)
+                # Enrich with the full object fetched this run so the update can
+                # reflect the changed files/commits (e.g. when an existing PR is
+                # merged, where the merge event itself carries no file data).
+                cached = self.object_cache.get((kind, number))
+                if cached:
+                    obj = {
+                        **obj,
+                        "files": cached.get("files", []),
+                        "commits": cached.get("commits", []),
+                    }
+                ms = self._merge_status_for(kind, number)
                 if ms is not None:
                     obj = {**obj, "merge_status": ms}
-                prev = self._load_summary(ev["repo"], ev["object_kind"], ev["object_number"])
+                prev = self._load_summary(ev["repo"], kind, number)
                 updated = self.llm.update_object_summary(prev or "", ev, obj)
                 self._save_summary(
                     ev["repo"],
@@ -322,6 +333,7 @@ class Pipeline:
                     "events": entry["events"],
                     "merge_status": ms,
                     "review_status_text": review_mod.describe(ms),
+                    "changed_files": self._changed_files_for(kind, number),
                 }
             )
 
@@ -336,6 +348,13 @@ class Pipeline:
         """Compute PR merge/review status from the full object fetched this run."""
         obj = self.object_cache.get((kind, number))
         return review_mod.merge_status(obj) if obj else None
+
+    def _changed_files_for(self, kind: str, number: int) -> list[str]:
+        """Filenames touched by the object, from the full object fetched this run."""
+        obj = self.object_cache.get((kind, number))
+        if not obj:
+            return []
+        return [f.get("filename") for f in obj.get("files", []) if f.get("filename")]
 
     def _fill_links(self, vm) -> None:
         """Deterministically finalize each item: links plus review/merge facts.
@@ -358,6 +377,11 @@ class Pipeline:
                     item.detail = rolling
                     if not item.summary.strip():
                         item.summary = _concise(rolling)
+
+                # Authoritative list of touched files (LLM cannot know these).
+                changed = self._changed_files_for(item.kind, item.number)
+                if changed:
+                    item.changed_files = changed
 
                 ms = self._merge_status_for(item.kind, item.number)
                 if ms is None:
