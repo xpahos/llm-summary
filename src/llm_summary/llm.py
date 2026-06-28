@@ -280,9 +280,10 @@ class OpenAISummarizer:
     def daily_view_model(self, payload: dict[str, Any]) -> DayViewModel:
         guidance = (
             "Produce a daily digest view model as STRICT JSON (no prose, no markdown). "
-            "Schema: {date, repo, headline, stats:{prs_updated,issues_active,merged,"
+            "Schema: {date, repo, stats:{prs_updated,issues_active,merged,"
             "needs_attention}, highlights:[string], sections:[{id,title,items:[{kind,number,"
             "title,badges:[string],summary,activity:[string],status,changed_files:[string]}]}]}. "
+            "The day overview is conveyed by stats + highlights; do not emit a separate headline. "
             "Group items into sections such as 'attention' (Needs attention), 'merged', "
             "'new' (New PRs/issues), 'updated', 'issues'. The 'summary' field is shown on the "
             "day overview, so make it CONCISE — one or two sentences capturing only the main "

@@ -66,3 +66,19 @@ def test_render_day_creates_expected_paths(config):
     assert "style.css" in day_html
     assert "pr/1234/" in day_html  # per-object link
     assert "SMBIOS handle range" in day_html
+
+
+def test_headline_is_not_rendered(config):
+    conn = db_mod.connect(config.storage.db_path)
+    db_mod.init_db(conn)
+    vm = _view_model()
+    vm.headline = "EDK II project updates include merged PRs and several closed as superseded."
+    try:
+        render_day(conn, config, vm, date(2026, 6, 27), run_id=1)
+    finally:
+        conn.close()
+
+    html = (Path(config.storage.site_dir) / "2026" / "06" / "27" / "index.html").read_text()
+    assert "<h1>edk2 daily</h1>" in html  # stable short heading
+    # The headline field is no longer surfaced anywhere on the page.
+    assert "EDK II project updates" not in html
