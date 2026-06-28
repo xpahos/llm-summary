@@ -1,0 +1,30 @@
+# llm-summary configuration template.
+# Values here are overridden by environment variables (env > toml > defaults).
+# Secrets should normally come from environment variables / .env, NOT this file.
+
+[github]
+# token = "ghp_..."        # prefer GITHUB_TOKEN env var
+repo = "tianocore/edk2"
+
+[llm]
+provider = "openai"
+# api_key = "sk-..."       # prefer LLM_API_KEY env var
+model = "gpt-4o"
+# base_url = "https://api.openai.com/v1"   # optional; for compatible endpoints
+temperature = 0.2
+
+[storage]
+db_path = "/data/llm-summary.sqlite"
+site_dir = "/site"
+
+[crawler]
+timezone = "UTC"
+default_bootstrap_days = 1
+
+[proxy]
+# Optional corporate proxy for all outbound traffic (GitHub + LLM).
+# Leave empty to go direct. Supports http(s):// and socks5(h):// schemes.
+# Use socks5h:// to resolve DNS on the proxy (typical for corporate networks).
+# Overridden by LLM_SUMMARY_PROXY / ALL_PROXY / HTTPS_PROXY env vars.
+# url = "socks5h://user:pass@proxy.corp:1080"
+url = ""

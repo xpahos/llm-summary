@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}{{ item.kind }} #{{ item.number }} — {{ d.isoformat() }}{% endblock %}
+{% block content %}
+<div class="object-header">
+  <div class="kicker">{{ item.kind | upper }} #{{ item.number }} · {{ d.isoformat() }}</div>
+  <h1>{{ item.title }}</h1>
+  {% if item.badges %}
+  <div class="badges">
+    {% for badge in item.badges %}<span class="badge">{{ badge }}</span>{% endfor %}
+  </div>
+  {% endif %}
+</div>
+
+{% if item.summary %}
+<section class="note">
+  <h2>Summary</h2>
+  <p>{{ item.summary }}</p>
+</section>
+{% endif %}
+
+{% if item.activity %}
+<section class="note">
+  <h2>Activity today</h2>
+  <ul class="item-activity">
+    {% for a in item.activity %}<li>{{ a }}</li>{% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% if item.status %}
+<section class="note">
+  <h2>Status</h2>
+  <p>{{ item.status }}</p>
+</section>
+{% endif %}
+
+{% if item.changed_files %}
+<section class="note">
+  <h2>Changed files</h2>
+  <div class="file-list">
+    {% for f in item.changed_files %}<code>{{ f }}</code>{% endfor %}
+  </div>
+</section>
+{% endif %}
+
+<section class="note">
+  <h2>Links</h2>
+  <ul>
+    {% if item.url %}<li><a href="{{ item.url }}">View on GitHub</a></li>{% endif %}
+  </ul>
+</section>
+{% endblock %}

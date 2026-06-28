@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-summary"
+version = "0.1.0"
+description = "Static daily summary generator for tianocore/edk2 GitHub activity"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "PyGithub>=2.3",
+    "langgraph>=0.2",
+    "langchain-openai>=0.2",
+    "jinja2>=3.1",
+    "pydantic>=2.6",
+    "python-dateutil>=2.9",
+    "tomli; python_version < '3.11'",
+    # SOCKS proxy support: PySocks for requests/PyGithub, httpx[socks] for the LLM client.
+    "PySocks>=1.7",
+    "httpx[socks]>=0.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+llm-summary = "llm_summary.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+llm_summary = ["schema.sql"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

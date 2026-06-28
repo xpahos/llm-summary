@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}{{ vm.repo }} — {{ vm.date }}{% endblock %}
+{% block content %}
+<div class="day-header">
+  <div class="date">{{ vm.repo }} · {{ vm.date }}</div>
+  <h1>{{ vm.headline or "edk2 daily" }}</h1>
+</div>
+
+<section class="digest">
+  <h2>Summary</h2>
+  <p class="item-meta">
+    {{ vm.stats.prs_updated }} PRs updated ·
+    {{ vm.stats.issues_active }} issues active ·
+    {{ vm.stats.merged }} merged ·
+    {{ vm.stats.needs_attention }} need attention
+  </p>
+  {% if vm.highlights %}
+  <ul class="highlights">
+    {% for h in vm.highlights %}<li>{{ h }}</li>{% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+{% for section in vm.sections %}
+<section class="section" id="{{ section.id }}">
+  <h2>{{ section.title }}</h2>
+  {% for item in section.items %}
+  <article class="item item--{{ section.id }}">
+    <div class="item-header">
+      <h3 class="item-title">
+        <a href="{{ item.local_path }}">{{ item.title }}</a>
+      </h3>
+      <span class="item-meta">{{ item.kind }} #{{ item.number }}</span>
+    </div>
+    {% if item.badges %}
+    <div class="badges">
+      {% for badge in item.badges %}<span class="badge">{{ badge }}</span>{% endfor %}
+    </div>
+    {% endif %}
+    {% if item.summary %}<p class="item-summary">{{ item.summary }}</p>{% endif %}
+    {% if item.activity %}
+    <ul class="item-activity">
+      {% for a in item.activity %}<li>{{ a }}</li>{% endfor %}
+    </ul>
+    {% endif %}
+    {% if item.status %}<p class="item-meta">{{ item.status }}</p>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+{% endfor %}
+{% endblock %}

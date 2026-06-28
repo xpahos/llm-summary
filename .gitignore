@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+
+# Runtime data / output
+data/
+site/
+
+# Secrets & local config
+.env
+config/config.toml
