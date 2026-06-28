@@ -1,6 +1,11 @@
 services:
   llm-summary:
     build: .
+    # Run as a non-root host user so files written to ./data and ./site are owned
+    # by you, not root. Set UID/GID in .env to your `id -u` / `id -g` (default
+    # 1000:1000). The mounted ./data and ./site must be writable by that uid/gid —
+    # see the README "Running as a non-root user" note.
+    user: "${UID:-1000}:${GID:-1000}"
     env_file:
       - .env
     environment:

@@ -91,12 +91,40 @@ def _extract_json(content: str) -> str:
     return s
 
 
+# Structured system prompt: stable role + house style + domain rules shared by every
+# task. Task-specific objectives and output formats live in the per-task user message
+# (see _compose), so these rules are stated once here instead of repeated per task.
 _SYSTEM = (
-    "You are a precise technical summarizer for the EDK II firmware project. "
-    "Write compact, factual engineering summaries. No marketing language, no HTML, "
-    "no markdown headings. Focus on what changed, why it matters, affected packages, "
-    "review state, blockers and compatibility risks."
+    "<role>\n"
+    "You are a precise technical summarizer for the EDK II (TianoCore edk2) firmware "
+    "project. You write for engineers reading a quiet daily patch-review archive.\n"
+    "</role>\n\n"
+    "<style>\n"
+    "- Factual and compact; no marketing language, praise, or filler.\n"
+    "- Plain text only: no Markdown, no HTML, no headings, no bullet syntax unless asked.\n"
+    "- Be concrete: name packages, file paths, reviewer logins, and short SHAs.\n"
+    "- Never invent facts that are not present in the input.\n"
+    "</style>\n\n"
+    "<domain>\n"
+    "- Focus on what changed, why it matters, affected packages, review state, blockers, "
+    "and compatibility risks.\n"
+    "- A PR is merged by Mergify only after a maintainer applies the 'push' label; without "
+    "it the PR is not ready to merge, regardless of how many comments it has.\n"
+    "- Treat automation accounts (is_bot=true, e.g. mergify[bot]) as automation — never as "
+    "human reviewers or approvers.\n"
+    "</domain>"
 )
+
+
+def _compose(task: str, payload: dict[str, Any], output: str | None = None) -> str:
+    """Assemble a structured user message: <task>, <input>, optional <output>."""
+    parts = [
+        f"<task>\n{task.strip()}\n</task>",
+        f"<input>\n{json.dumps(payload, default=str)}\n</input>",
+    ]
+    if output:
+        parts.append(f"<output>\n{output.strip()}\n</output>")
+    return "\n\n".join(parts)
 
 
 class OpenAISummarizer:
@@ -183,25 +211,21 @@ class OpenAISummarizer:
             ][:40],
             "merge_status": review.merge_status(obj),
         }
-        guidance = (
-            "Summarize this PR/issue as initial context (4-7 sentences) covering BOTH the code "
-            "and the discussion. For a PR: what the change does and why (read the commit "
-            "messages and the diff stats in files, not just the title/body), which packages/"
-            "files it touches, and then summarize the conversation — the substantive points "
-            "reviewers and the author raised in comments and reviews (objections, requested "
-            "changes, decisions, and the reason it was ultimately merged or closed if known). "
-            "For an issue: problem, affected area, symptoms/repro, current hypothesis, and the "
-            "key points from the discussion. Do not ignore the comments: if the comments list "
-            "is non-empty, the summary must reflect what was discussed.\n"
-            "If a PR has reviews, do not merely say one user approved: state how many "
-            "maintainer approvals exist (use merge_status.approval_count / approvals), whether "
-            "further approval is still needed, whether the 'push' label is present "
-            "(merge_status.has_push_label) and therefore whether it is ready to merge or "
-            "queued (merge_status.ready_to_merge). edk2 only merges PRs that carry the 'push' "
-            "label. Treat actors with is_bot=true (e.g. mergify[bot]) as automation, not "
-            "human reviewers/commenters."
+        task = (
+            "Write the initial rolling summary for this PR/issue as context, covering BOTH the "
+            "code and the discussion. For a PR: what the change does and why (read the commit "
+            "messages and the per-file diff stats, not just the title/body), and which packages/"
+            "files it touches; then summarize the conversation — the substantive points "
+            "reviewers and the author raised (objections, requested changes, decisions, and the "
+            "reason it was merged or closed if known). For an issue: problem, affected area, "
+            "symptoms/repro, current hypothesis, and the key discussion points. If the comments "
+            "list is non-empty, the summary MUST reflect what was discussed. State the review/"
+            "merge status from merge_status: how many maintainer approvals (approval_count/"
+            "approvals), whether more are needed, whether the 'push' label is present "
+            "(has_push_label) and thus whether it is ready/queued to merge (ready_to_merge)."
         )
-        return self._chat(f"{guidance}\n\nDATA:\n{json.dumps(payload, default=str)}").strip()
+        output = "A single plain-text paragraph of 4-7 sentences. No headings or lists."
+        return self._chat(_compose(task, payload, output)).strip()
 
     # --- task 2 ------------------------------------------------------------
     def summarize_head_diff(self, old_sha: str, new_sha: str, compare: dict[str, Any]) -> str:
@@ -222,13 +246,14 @@ class OpenAISummarizer:
                 for f in compare.get("files", [])
             ][:60],
         }
-        guidance = (
-            "In 1-3 sentences, summarize what changed between the old and new PR head. "
-            "Focus on what the author fixed, whether tests were updated, whether review "
-            "feedback appears addressed, and which packages were touched. Use neutral "
-            "wording (the head was updated); do not speculate about force-push vs rebase."
+        task = (
+            "Summarize what changed between the PR's old and new head: what the author fixed, "
+            "whether tests were updated, whether review feedback appears addressed, and which "
+            "packages were touched. Use neutral wording (the head was updated); do not "
+            "speculate about force-push vs rebase."
         )
-        return self._chat(f"{guidance}\n\nDATA:\n{json.dumps(payload, default=str)}").strip()
+        output = "1-3 plain-text sentences."
+        return self._chat(_compose(task, payload, output)).strip()
 
     # --- task 3 ------------------------------------------------------------
     def update_object_summary(self, prev: str, event: dict[str, Any], obj: dict[str, Any]) -> str:
@@ -256,48 +281,44 @@ class OpenAISummarizer:
                 ][:50],
             },
         }
-        guidance = (
-            "Update the rolling summary given the new event. Keep it compact and technical "
-            "(4-7 sentences) and return only the updated summary text.\n"
-            "IMPORTANT: do not discard the existing context. The previous_summary already "
-            "captures what the change does and the prior discussion (comments, reviews, "
-            "concerns, decisions) — preserve that and fold the new event into it, only dropping "
-            "details that the event makes obsolete. A 'closed' or 'merged' event must NOT "
-            "replace the summary with just 'the PR was closed/merged': keep the description of "
-            "the code change, reflect the files/packages affected (object.changed_files / "
-            "commits), keep the discussion, and add the outcome (and the reason, if "
-            "discernible). For a 'commented' / 'reviewed' / 'review_comment' event, incorporate "
-            "the substance of what was said. For 'pr_head_updated', fold in the diff_summary.\n"
-            "If the event is a review or the object has merge_status, reflect the current "
-            "review/merge state: number of maintainer approvals, whether more are needed, "
-            "whether the 'push' label is present and the PR is ready to merge. The new_event "
-            "payload may include is_bot=true (e.g. mergify[bot]); describe such actors as "
-            "automation, not as a maintainer approving the PR."
+        task = (
+            "Update the rolling summary by folding in the new event. Do NOT discard existing "
+            "context: previous_summary already captures the code change and the prior "
+            "discussion (comments, reviews, concerns, decisions) — preserve it and only drop "
+            "details the event makes obsolete. A 'closed' or 'merged' event must NOT reduce the "
+            "summary to 'the PR was closed/merged': keep the code-change description, reflect "
+            "the affected files/packages (object.changed_files / commits), keep the discussion, "
+            "and add the outcome (and the reason, if discernible). For 'commented' / 'reviewed' "
+            "/ 'review_comment', incorporate the substance of what was said. For "
+            "'pr_head_updated', fold in the diff_summary. Reflect the current review/merge state "
+            "(approvals, whether more are needed, 'push' label / ready-to-merge)."
         )
-        return self._chat(f"{guidance}\n\nDATA:\n{json.dumps(payload, default=str)}").strip()
+        output = "A single plain-text paragraph of 4-7 sentences. Return only the updated summary."
+        return self._chat(_compose(task, payload, output)).strip()
 
     # --- task 4 ------------------------------------------------------------
     def daily_view_model(self, payload: dict[str, Any]) -> DayViewModel:
-        guidance = (
-            "Produce a daily digest view model as STRICT JSON (no prose, no markdown). "
-            "Schema: {date, repo, stats:{prs_updated,issues_active,merged,"
-            "needs_attention}, highlights:[string], sections:[{id,title,items:[{kind,number,"
-            "title,badges:[string],summary,activity:[string],status,changed_files:[string]}]}]}. "
-            "The day overview is conveyed by stats + highlights; do not emit a separate headline. "
-            "Group items into sections such as 'attention' (Needs attention), 'merged', "
-            "'new' (New PRs/issues), 'updated', 'issues'. The 'summary' field is shown on the "
-            "day overview, so make it CONCISE — one or two sentences capturing only the main "
-            "point(s); the full expanded summary is rendered on the item's own page. Keep "
-            "activity bullets terse. Omit url/local_path; they are filled in later.\n"
-            "Each PR item includes merge_status and review_status_text. When describing review "
-            "activity, do not just say someone approved: reflect the approval count, whether "
-            "more approvals are needed, whether the 'push' label is present and the PR is ready "
-            "to merge (edk2 merges only with the 'push' label). Ignore bot approvals "
-            "(merge_status.bot_approvals, e.g. mergify[bot]) as human sign-off. A PR lacking "
-            "the 'push' label or with changes requested is a good 'attention' candidate. "
-            "(Authoritative badges and status are also applied automatically afterwards.)"
+        task = (
+            "Produce a daily digest view model for the archive. Group items into sections such "
+            "as 'attention' (needs attention), 'merged', 'new' (new PRs/issues), 'updated', "
+            "'issues'. The day overview is conveyed by stats + highlights; do NOT emit a "
+            "headline. Each item's 'summary' is shown on the day overview, so keep it CONCISE — "
+            "one or two sentences, main point(s) only; the expanded summary is rendered on the "
+            "item's own page. Keep activity bullets terse. When describing review activity, "
+            "reflect the approval count, whether more approvals are needed, and whether the "
+            "'push' label is present / ready to merge; ignore bot approvals "
+            "(merge_status.bot_approvals) as human sign-off. A PR lacking 'push' or with changes "
+            "requested is a good 'attention' candidate. (Links, badges, status, changed_files "
+            "and section/item ordering are applied deterministically afterwards, so omit "
+            "url/local_path.)"
         )
-        raw = self._chat(f"{guidance}\n\nDATA:\n{json.dumps(payload, default=str)}")
+        output = (
+            "STRICT JSON only — no prose, no Markdown, no code fences. Schema: "
+            "{date, repo, stats:{prs_updated,issues_active,merged,needs_attention}, "
+            "highlights:[string], sections:[{id,title,items:[{kind,number,title,"
+            "badges:[string],summary,activity:[string],status,changed_files:[string]}]}]}"
+        )
+        raw = self._chat(_compose(task, payload, output))
         return _parse_view_model(raw, payload)
 
 

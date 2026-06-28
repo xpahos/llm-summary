@@ -42,6 +42,22 @@ If `/config` is ephemeral, the entrypoint self-seeds `config.toml` from the bund
 template on startup; the app also runs with **no** config file at all, using env vars and
 built-in defaults.
 
+### Running as a non-root user
+
+The container runs as the uid:gid from `UID`/`GID` (default `1000:1000`) via the compose
+`user:` directive, so generated files aren't root-owned. Set them in `.env` (the shell's
+`UID` isn't exported to Compose, so it must live in the file) and make the mounted dirs
+writable by that user once:
+
+```bash
+printf 'UID=%s\nGID=%s\n' "$(id -u)" "$(id -g)" >> .env
+mkdir -p data site
+sudo chown -R "$(id -u):$(id -g)" data site   # only if they were created by an earlier root run
+```
+
+`/config` is mounted read-only, so the entrypoint can't seed `config.toml` there as a
+non-root user — supply config via env vars (`.env`) or a pre-populated `config.toml`.
+
 ## CLI
 
 ```bash
