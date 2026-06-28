@@ -20,6 +20,21 @@ log = logging.getLogger("llm_summary.renderer")
 # Number of most-recent days listed on the root index page.
 RECENT_DAYS = 7
 
+# Canonical day-page section order (anything else is appended, sorted by id).
+_SECTION_ORDER = ["attention", "merged", "new", "updated", "closed", "issues"]
+
+
+def _section_sort_key(section_id: str) -> tuple[int, str]:
+    try:
+        return (_SECTION_ORDER.index(section_id), "")
+    except ValueError:
+        return (len(_SECTION_ORDER), section_id or "")
+
+
+def order_sections(sections):
+    """Stable canonical section ordering; drops empty sections."""
+    return [s for s in sorted(sections, key=lambda s: _section_sort_key(s.id)) if s.items]
+
 
 def _env():
     from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -75,6 +90,10 @@ def render_day(
     site_dir = config.storage.site_dir
     env = _env()
     written: list[Path] = []
+
+    # Enforce a stable section order regardless of what the LLM emitted (also
+    # fixes already-stored payloads when re-rendering).
+    view_model.sections = order_sections(view_model.sections)
 
     _copy_assets(site_dir)
 
