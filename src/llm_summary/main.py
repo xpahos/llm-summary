@@ -131,6 +131,30 @@ def cmd_render_latest(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_render_all(cfg: config_mod.Config, args: argparse.Namespace) -> int:
+    from .renderer import render_all
+
+    try:
+        days = resolve_days(args.date, args.from_date, args.to_date)
+    except ValueError as exc:
+        log.error("%s", exc)
+        return 2
+    only_dates = {d.isoformat() for d in days} if days is not None else None
+
+    conn = db_mod.connect(cfg.storage.db_path)
+    try:
+        db_mod.init_db(conn)
+        paths = render_all(conn, cfg, only_dates=only_dates)
+    finally:
+        conn.close()
+    if not paths:
+        log.warning("Nothing to render (no matching daily_pages found).")
+        return 1
+    scope = "all stored days" if only_dates is None else f"{len(only_dates)} requested day(s)"
+    log.info("Re-rendered %d page(s) across %s.", len(paths), scope)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="llm-summary")
     parser.add_argument(
@@ -166,6 +190,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("render-latest", help="Re-render the most recent daily page.")
 
+    render_all = sub.add_parser(
+        "render-all",
+        help="Re-render stored days from saved data (no GitHub, no LLM). "
+        "With no date flags, renders all stored days.",
+    )
+    render_all.add_argument("--date", type=_date_arg, help="Render a single day (YYYY-MM-DD).")
+    render_all.add_argument(
+        "--from", dest="from_date", type=_date_arg,
+        help="Start of an inclusive date range (YYYY-MM-DD); requires --to.",
+    )
+    render_all.add_argument(
+        "--to", dest="to_date", type=_date_arg,
+        help="End of an inclusive date range (YYYY-MM-DD); requires --from.",
+    )
+
     crawl = sub.add_parser("crawl", help="Run the pipeline over an explicit window.")
     crawl.add_argument("--since", required=True, help="ISO-8601 window start (inclusive).")
     crawl.add_argument("--until", required=True, help="ISO-8601 window end (exclusive).")
@@ -177,6 +216,7 @@ _DISPATCH = {
     "init-db": cmd_init_db,
     "run-daily": cmd_run_daily,
     "render-latest": cmd_render_latest,
+    "render-all": cmd_render_all,
     "crawl": cmd_crawl,
 }
 

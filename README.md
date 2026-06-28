@@ -50,6 +50,8 @@ python -m llm_summary.main run-daily --date 2026-06-20            # one specific
 python -m llm_summary.main run-daily --from 2026-06-01 --to 2026-06-07  # inclusive range
 python -m llm_summary.main init-db          # create the SQLite schema
 python -m llm_summary.main render-latest    # re-render the most recent day from stored state
+python -m llm_summary.main render-all       # re-render every stored day (no GitHub/LLM)
+python -m llm_summary.main render-all --from 2026-06-10 --to 2026-06-15  # re-render a range
 python -m llm_summary.main crawl --since 2026-06-27T00:00:00Z --until 2026-06-28T00:00:00Z
 ```
 
@@ -57,6 +59,7 @@ python -m llm_summary.main crawl --since 2026-06-27T00:00:00Z --until 2026-06-28
 
 - **no date flags** — the automatic daily window (previous successful `until` → start of
   today, UTC). This is the scheduler mode and the only one that **advances the cursor**.
+  A run started just after `00:00 UTC` on day *D* summarizes the previous day *D-1*.
 - **`--date YYYY-MM-DD`** — process exactly that UTC calendar day.
 - **`--from YYYY-MM-DD --to YYYY-MM-DD`** — process every day in the inclusive range,
   oldest first, one daily page per day.
@@ -64,6 +67,24 @@ python -m llm_summary.main crawl --since 2026-06-27T00:00:00Z --until 2026-06-28
 Explicit `--date` / `--from`/`--to` runs (and `crawl`) **do not** move the cursor, so
 backfilling or re-running an old day is safe and won't disturb the daily schedule. All
 windows are idempotent — re-processing a day inserts no duplicate events.
+
+### Re-rendering without re-crawling
+
+`render-latest` (most recent day) and `render-all` (every stored day, or a `--date` /
+`--from`/`--to` subset) rebuild HTML purely from the saved view models in `daily_pages`
+— **no GitHub calls, no LLM**. Use them to apply template/CSS/layout changes across the
+archive. They can only surface fields already stored when each day was generated; data
+added later needs a real `run-daily`. Navigational indexes are always rebuilt from the
+full `daily_pages` table, so rendering a subset never breaks the year/month/root listings.
+
+### Scheduling (cron)
+
+Run `run-daily` (no date flags) shortly after midnight UTC; each run produces the
+previous day's page and advances the cursor:
+
+```cron
+5 0 * * * cd /path/to/llm-summary && docker compose run --rm llm-summary run-daily >> cron.log 2>&1
+```
 
 An entry-point script named `llm-summary` is installed as well (e.g. `llm-summary
 run-daily --date 2026-06-20`). A global `--config PATH` flag overrides the config file

@@ -239,3 +239,36 @@ def render_latest(conn: sqlite3.Connection, config: Config) -> list[Path]:
     vm = DayViewModel.model_validate(json.loads(row["payload_json"]))
     d = date.fromisoformat(row["date"])
     return render_day(conn, config, vm, d, row["run_id"])
+
+
+def render_all(
+    conn: sqlite3.Connection,
+    config: Config,
+    only_dates: set[str] | None = None,
+) -> list[Path]:
+    """Re-render stored days from their view models — no GitHub, no LLM.
+
+    only_dates: if given, render only those ISO (YYYY-MM-DD) dates; otherwise all.
+    Use this to propagate template/CSS/renderer changes across the archive. It can
+    only surface fields that were already stored in payload_json; anything added to
+    the data model after a day was generated needs a real run to recover.
+
+    The navigational indexes are always rebuilt from the full daily_pages table, so
+    rendering a subset never corrupts the year/month/root listings.
+    """
+    rows = conn.execute(
+        "SELECT date, run_id, payload_json FROM daily_pages ORDER BY date"
+    ).fetchall()
+    if only_dates is not None:
+        rows = [r for r in rows if r["date"] in only_dates]
+        missing = only_dates - {r["date"] for r in rows}
+        if missing:
+            log.warning("No stored page for: %s", ", ".join(sorted(missing)))
+
+    written: list[Path] = []
+    for row in rows:
+        vm = DayViewModel.model_validate(json.loads(row["payload_json"]))
+        d = date.fromisoformat(row["date"])
+        written += render_day(conn, config, vm, d, row["run_id"])
+    log.info("Re-rendered %d day(s) from stored data", len(rows))
+    return written
