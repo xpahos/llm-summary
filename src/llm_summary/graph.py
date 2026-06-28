@@ -331,6 +331,12 @@ class Pipeline:
                 if obj.get("url"):
                     item.url = obj["url"]
 
+                # Prefer the authoritative rolling summary (which incorporates the
+                # full discussion and code context) over the LLM's re-compression.
+                rolling = self._load_summary(vm.repo, item.kind, item.number)
+                if rolling:
+                    item.summary = rolling
+
                 ms = self._merge_status_for(item.kind, item.number)
                 if ms is None:
                     continue

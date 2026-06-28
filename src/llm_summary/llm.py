@@ -147,35 +147,58 @@ class OpenAISummarizer:
             "body": _trim(obj.get("body")),
             "base_ref": obj.get("base_ref"),
             "head_ref": obj.get("head_ref"),
-            "files": [f["filename"] for f in obj.get("files", [])][:60],
-            "commits": [c.get("message", "").splitlines()[0:1] for c in obj.get("commits", [])][:40],
+            "files": [
+                {
+                    "filename": f.get("filename"),
+                    "status": f.get("status"),
+                    "additions": f.get("additions"),
+                    "deletions": f.get("deletions"),
+                }
+                for f in obj.get("files", [])
+            ][:80],
+            "commits": [
+                {
+                    "author": c.get("author"),
+                    "message": (c.get("message") or "").split("\n", 1)[0],
+                }
+                for c in obj.get("commits", [])
+            ][:50],
             "comments": [
-                {"user": c.get("user"), "body": _trim(c.get("body"), 600)}
+                {
+                    "user": c.get("user"),
+                    "is_bot": review.is_bot(c.get("user"), c.get("user_type")),
+                    "body": _trim(c.get("body"), 800),
+                }
                 for c in obj.get("comments", [])
-            ][:30],
+            ][:40],
             "reviews": [
                 {
                     "user": r.get("user"),
                     "state": r.get("state"),
                     "is_bot": review.is_bot(r.get("user"), r.get("user_type")),
-                    "body": _trim(r.get("body"), 400),
+                    "body": _trim(r.get("body"), 600),
                 }
-                for r in obj.get("reviews", [])
-            ][:30],
+                for r in obj.get("review_comments", []) + obj.get("reviews", [])
+            ][:40],
             "merge_status": review.merge_status(obj),
         }
         guidance = (
-            "Summarize this PR/issue as initial context (3-6 sentences). For a PR: what it "
-            "changes, why, touched packages/files, current status, review state, important "
-            "objections/blockers, compatibility risks. For an issue: problem, affected area, "
-            "symptoms/repro, current hypothesis, status / next action.\n"
+            "Summarize this PR/issue as initial context (4-7 sentences) covering BOTH the code "
+            "and the discussion. For a PR: what the change does and why (read the commit "
+            "messages and the diff stats in files, not just the title/body), which packages/"
+            "files it touches, and then summarize the conversation — the substantive points "
+            "reviewers and the author raised in comments and reviews (objections, requested "
+            "changes, decisions, and the reason it was ultimately merged or closed if known). "
+            "For an issue: problem, affected area, symptoms/repro, current hypothesis, and the "
+            "key points from the discussion. Do not ignore the comments: if the comments list "
+            "is non-empty, the summary must reflect what was discussed.\n"
             "If a PR has reviews, do not merely say one user approved: state how many "
             "maintainer approvals exist (use merge_status.approval_count / approvals), whether "
             "further approval is still needed, whether the 'push' label is present "
             "(merge_status.has_push_label) and therefore whether it is ready to merge or "
             "queued (merge_status.ready_to_merge). edk2 only merges PRs that carry the 'push' "
-            "label. Treat reviewers with is_bot=true (e.g. mergify[bot]) as automation, not "
-            "human approvals."
+            "label. Treat actors with is_bot=true (e.g. mergify[bot]) as automation, not "
+            "human reviewers/commenters."
         )
         return self._chat(f"{guidance}\n\nDATA:\n{json.dumps(payload, default=str)}").strip()
 
@@ -228,8 +251,15 @@ class OpenAISummarizer:
         }
         guidance = (
             "Update the rolling summary given the new event. Keep it compact and technical "
-            "(3-6 sentences). Preserve still-relevant context, fold in what the event changes, "
-            "and drop stale details. Return only the updated summary text.\n"
+            "(4-7 sentences) and return only the updated summary text.\n"
+            "IMPORTANT: do not discard the existing context. The previous_summary already "
+            "captures what the change does and the prior discussion (comments, reviews, "
+            "concerns, decisions) — preserve that and fold the new event into it, only dropping "
+            "details that the event makes obsolete. A 'closed' or 'merged' event must NOT "
+            "replace the summary with just 'the PR was closed/merged'; keep the description of "
+            "the code change and the discussion and add the outcome (and the reason, if "
+            "discernible). For a 'commented' / 'reviewed' / 'review_comment' event, incorporate "
+            "the substance of what was said. For 'pr_head_updated', fold in the diff_summary.\n"
             "If the event is a review or the object has merge_status, reflect the current "
             "review/merge state: number of maintainer approvals, whether more are needed, "
             "whether the 'push' label is present and the PR is ready to merge. The new_event "

@@ -114,8 +114,12 @@ class GithubClient:
         }
 
     def _comments(self, issue) -> list[dict[str, Any]]:
+        # The conversation comments. For a PR, get_comments() returns review (diff)
+        # comments — the conversation lives on get_issue_comments(); for an Issue,
+        # get_comments() is the conversation and get_issue_comments() does not exist.
+        getter = getattr(issue, "get_issue_comments", None) or issue.get_comments
         out = []
-        for c in _safe(lambda: list(issue.get_comments()), []):
+        for c in _safe(lambda: list(getter()), []):
             out.append(
                 {
                     "id": c.id,
