@@ -17,6 +17,9 @@ from .llm import DayViewModel
 
 log = logging.getLogger("llm_summary.renderer")
 
+# Number of most-recent days listed on the root index page.
+RECENT_DAYS = 7
+
 
 def _env():
     from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -139,7 +142,7 @@ def _render_indexes(conn: sqlite3.Connection, config: Config, env) -> list[Path]
     # Root index: list of years.
     years = sorted({r["date"][:4] for r in days}, reverse=True)
     root_links = [{"label": y, "href": f"{y}/index.html"} for y in years]
-    recent = [{"label": r["date"], "href": f"{r['date'][:4]}/{r['date'][5:7]}/{r['date'][8:10]}/index.html"} for r in days[:30]]
+    recent = [{"label": r["date"], "href": f"{r['date'][:4]}/{r['date'][5:7]}/{r['date'][8:10]}/index.html"} for r in days[:RECENT_DAYS]]
     written.append(
         _write(
             paths_mod.root_index(site_dir),
