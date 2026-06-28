@@ -11,10 +11,11 @@
   {% endif %}
 </div>
 
-{% if item.summary %}
+{% set full_summary = item.detail or item.summary %}
+{% if full_summary %}
 <section class="note">
   <h2>Summary</h2>
-  <p>{{ item.summary }}</p>
+  <p>{{ full_summary }}</p>
 </section>
 {% endif %}
 

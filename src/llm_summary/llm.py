@@ -32,7 +32,8 @@ class ViewItem(BaseModel):
     url: str = ""
     local_path: str = ""
     badges: list[str] = Field(default_factory=list)
-    summary: str = ""
+    summary: str = ""           # concise, shown on the day page
+    detail: str = ""            # expanded summary, shown on the per-object page
     activity: list[str] = Field(default_factory=list)
     status: str = ""
     changed_files: list[str] = Field(default_factory=list)
@@ -276,7 +277,9 @@ class OpenAISummarizer:
             "needs_attention}, highlights:[string], sections:[{id,title,items:[{kind,number,"
             "title,badges:[string],summary,activity:[string],status,changed_files:[string]}]}]}. "
             "Group items into sections such as 'attention' (Needs attention), 'merged', "
-            "'new' (New PRs/issues), 'updated', 'issues'. Keep summaries to 1-3 sentences and "
+            "'new' (New PRs/issues), 'updated', 'issues'. The 'summary' field is shown on the "
+            "day overview, so make it CONCISE — one or two sentences capturing only the main "
+            "point(s); the full expanded summary is rendered on the item's own page. Keep "
             "activity bullets terse. Omit url/local_path; they are filled in later.\n"
             "Each PR item includes merge_status and review_status_text. When describing review "
             "activity, do not just say someone approved: reflect the approval count, whether "

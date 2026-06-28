@@ -32,6 +32,26 @@ from .llm import Summarizer, make_summarizer
 log = logging.getLogger("llm_summary.graph")
 
 
+def _concise(text: str, max_sentences: int = 2, limit: int = 320) -> str:
+    """First sentence(s) of a longer summary, as a concise day-page fallback."""
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    sentences: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in ".!?":
+            sentences.append(buf.strip())
+            buf = ""
+            if len(sentences) >= max_sentences:
+                break
+    if buf.strip():
+        sentences.append(buf.strip())
+    out = " ".join(sentences).strip()
+    return out if len(out) <= limit else out[:limit].rstrip() + "…"
+
+
 class DigestState(TypedDict, total=False):
     run_id: int
     repo: str
@@ -331,11 +351,13 @@ class Pipeline:
                 if obj.get("url"):
                     item.url = obj["url"]
 
-                # Prefer the authoritative rolling summary (which incorporates the
-                # full discussion and code context) over the LLM's re-compression.
+                # The full rolling summary (discussion + code context) is the expanded
+                # text for the per-object page; the day page keeps the concise summary.
                 rolling = self._load_summary(vm.repo, item.kind, item.number)
                 if rolling:
-                    item.summary = rolling
+                    item.detail = rolling
+                    if not item.summary.strip():
+                        item.summary = _concise(rolling)
 
                 ms = self._merge_status_for(item.kind, item.number)
                 if ms is None:

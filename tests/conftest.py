@@ -162,7 +162,9 @@ class FakeSummarizer:
                     kind=it["kind"],
                     number=it["number"],
                     title=it.get("title") or "",
-                    summary=it.get("summary") or "",
+                    # Concise day-page summary, deliberately distinct from the full
+                    # rolling summary so the day/object split is testable.
+                    summary=f"MAINPOINT {it['number']}",
                     activity=[e["type"] for e in it.get("events", [])],
                 )
             )
