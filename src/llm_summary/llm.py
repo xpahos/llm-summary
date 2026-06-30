@@ -264,7 +264,9 @@ class OpenAISummarizer:
                 "actor": event.get("actor"),
                 "created_at": event.get("created_at"),
                 "body": _trim(event.get("body"), 1500),
-                "payload": _maybe_json(event.get("payload_json")),
+                "payload": _event_payload_for_prompt(
+                    event.get("event_type"), _maybe_json(event.get("payload_json"))
+                ),
             },
             "object": {
                 "kind": obj.get("kind"),
@@ -329,6 +331,33 @@ def _maybe_json(value: str | None) -> Any:
         return json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return value
+
+
+def _event_payload_for_prompt(event_type: str | None, payload: Any) -> Any:
+    """Compact an event payload before sending it to the LLM.
+
+    pr_head_updated payloads embed the full compare data (commits + files + raw
+    patches) and can reach >1 MB, which blows the model's context window. The diff
+    was already summarized into diff_summary at creation time, so we send that plus
+    light metadata — never the raw commits/files/patches.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    if event_type == "pr_head_updated":
+        files = payload.get("files") or []
+        commits = payload.get("commits") or []
+        return {
+            "old_head_sha": payload.get("old_head_sha"),
+            "new_head_sha": payload.get("new_head_sha"),
+            "compare_url": payload.get("compare_url"),
+            "diff_summary": payload.get("diff_summary"),
+            "commit_count": len(commits),
+            "file_count": len(files),
+            "files": [
+                f.get("filename") for f in files if isinstance(f, dict) and f.get("filename")
+            ][:40],
+        }
+    return payload
 
 
 def _parse_view_model(raw: str, payload: dict[str, Any]) -> DayViewModel:

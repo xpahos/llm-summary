@@ -282,7 +282,9 @@ class GithubClient:
                     "status": f.status,
                     "additions": f.additions,
                     "deletions": f.deletions,
-                    "patch": getattr(f, "patch", None),
+                    # Intentionally omit the raw patch: it is not used for the diff
+                    # summary and bloats the stored event payload (seen >1 MB),
+                    # which can blow the LLM context window when folded in later.
                 }
             )
         return {

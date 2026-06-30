@@ -179,10 +179,16 @@ class Pipeline:
         rows = self.conn.execute(
             "SELECT * FROM events WHERE processed = 0 ORDER BY created_at, id"
         ).fetchall()
-        with transaction(self.conn):
-            for ev in rows:
-                ev = dict(ev)
-                kind, number = ev["object_kind"], ev["object_number"]
+        # Each event is processed in its own transaction so a single failure (e.g.
+        # an LLM error) cannot roll back the whole batch or wedge the queue. A
+        # failed event is left unprocessed to retry next run, while the rest make
+        # progress; the run still succeeds so the cursor advances.
+        processed = 0
+        failed = 0
+        for ev in rows:
+            ev = dict(ev)
+            kind, number = ev["object_kind"], ev["object_number"]
+            try:
                 obj = self._object_snapshot(ev["repo"], kind, number)
                 # Enrich with the full object fetched this run so the update can
                 # reflect the changed files/commits (e.g. when an existing PR is
@@ -199,15 +205,17 @@ class Pipeline:
                     obj = {**obj, "merge_status": ms}
                 prev = self._load_summary(ev["repo"], kind, number)
                 updated = self.llm.update_object_summary(prev or "", ev, obj)
-                self._save_summary(
-                    ev["repo"],
-                    ev["object_kind"],
-                    ev["object_number"],
-                    updated,
-                    last_event_id=ev["id"],
+                with transaction(self.conn):
+                    self._save_summary(ev["repo"], kind, number, updated, last_event_id=ev["id"])
+                    self.conn.execute("UPDATE events SET processed = 1 WHERE id = ?", (ev["id"],))
+                processed += 1
+            except Exception as exc:  # noqa: BLE001 - isolate per-event failures
+                failed += 1
+                log.warning(
+                    "process_events: skipping event %s (%s #%s %s): %s",
+                    ev["id"], kind, number, ev["event_type"], exc,
                 )
-                self.conn.execute("UPDATE events SET processed = 1 WHERE id = ?", (ev["id"],))
-        log.info("Processed %d event(s)", len(rows))
+        log.info("Processed %d event(s); %d failed/skipped", processed, failed)
         return {}
 
     def build_daily_view_model(self, state: DigestState) -> DigestState:
