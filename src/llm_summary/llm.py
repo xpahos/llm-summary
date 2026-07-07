@@ -76,19 +76,26 @@ def _trim(text: str | None, limit: int = _MAX_BODY) -> str:
     return text if len(text) <= limit else text[:limit] + " […]"
 
 
-def _extract_json(content: str) -> str:
-    """Strip markdown code fences and isolate the JSON object."""
+def _loads_first_json(content: str) -> Any:
+    """Parse the first complete JSON object from content.
+
+    Strips markdown code fences and any leading/trailing prose, then uses
+    raw_decode so that content *after* the JSON object (extra prose, a second
+    object, a trailing note) is ignored rather than raising 'Extra data'.
+    """
     s = content.strip()
     if s.startswith("```"):
-        s = s.split("\n", 1)[1] if "\n" in s else s
+        s = s[3:]
+        if s[:4].lower() == "json":
+            s = s[4:]
+        s = s.strip()
         if s.endswith("```"):
-            s = s[: -3]
-        if s.lstrip().startswith("json"):
-            s = s.lstrip()[4:]
-    start, end = s.find("{"), s.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        return s[start : end + 1]
-    return s
+            s = s[:-3].strip()
+    start = s.find("{")
+    if start == -1:
+        raise ValueError("no JSON object found in model output")
+    obj, _end = json.JSONDecoder().raw_decode(s[start:])
+    return obj
 
 
 # Structured system prompt: stable role + house style + domain rules shared by every
@@ -362,9 +369,9 @@ def _event_payload_for_prompt(event_type: str | None, payload: Any) -> Any:
 
 def _parse_view_model(raw: str, payload: dict[str, Any]) -> DayViewModel:
     try:
-        data = json.loads(_extract_json(raw))
+        data = _loads_first_json(raw)
         return DayViewModel.model_validate(data)
-    except (json.JSONDecodeError, ValidationError) as exc:
+    except (json.JSONDecodeError, ValidationError, ValueError) as exc:
         log.error("Failed to parse daily view model JSON: %s", exc)
         raise ValueError("LLM returned invalid daily view model JSON") from exc
 
