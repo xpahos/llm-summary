@@ -18,7 +18,8 @@ class CapturingSummarizer(FakeSummarizer):
 
 
 def _merged(number):
-    pr = make_pr(number)
+    # Merging bumps updated_at on GitHub, so the fixture models that too.
+    pr = make_pr(number, updated="2026-06-27T15:00:00Z")
     pr["state"] = "closed"
     pr["merged"] = 1
     pr["merged_at"] = "2026-06-27T15:00:00Z"
@@ -54,8 +55,8 @@ def test_new_commits_reach_the_update(config, since_until):
 
     run_pipeline(config, since=since, until=until, gh=FakeGithubClient(config.github.repo, objects), summarizer=cap)
 
-    # New commits -> head SHA changes.
-    objects[("pr", 1234)] = make_pr(1234, head_sha="def456")
+    # New commits -> head SHA changes (and updated_at bumps, as on GitHub).
+    objects[("pr", 1234)] = make_pr(1234, head_sha="def456", updated="2026-06-27T13:00:00Z")
     run_pipeline(config, since=since, until=until, gh=FakeGithubClient(config.github.repo, objects), summarizer=cap)
 
     head = [(ev, obj) for ev, obj in cap.calls if ev["event_type"] == "pr_head_updated"]

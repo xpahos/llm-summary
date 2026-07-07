@@ -76,6 +76,7 @@ class Pipeline:
         since: str | None = None,
         until: str | None = None,
         advance_cursor: bool = True,
+        force_update: bool = False,
     ):
         self.config = config
         self.conn = conn
@@ -84,6 +85,7 @@ class Pipeline:
         self._since_arg = since
         self._until_arg = until
         self.advance_cursor = advance_cursor
+        self.force_update = force_update
 
         self.since_dt: datetime | None = None
         self.until_dt: datetime | None = None
@@ -122,30 +124,76 @@ class Pipeline:
         }
 
     def fetch_candidates(self, state: DigestState) -> DigestState:
-        candidates = self.gh.search_candidates(self.since_dt, self.until_dt)
+        candidates = self.gh.discover_candidates(self.since_dt, self.until_dt)
         log.info("Found %d candidate(s)", len(candidates))
         return {"candidate_refs": candidates}
 
     def sync_objects(self, state: DigestState) -> DigestState:
         synced: list[dict] = []
         event_ids = list(state.get("event_ids", []))
+        skipped = 0
         with transaction(self.conn):
             for ref in state.get("candidate_refs", []):
                 kind, number = ref["kind"], ref["number"]
-                obj = self.gh.fetch_object(kind, number)
+
+                obj = None if self.force_update else self._reusable_snapshot(ref)
+                if obj is not None:
+                    # Already ingested and unchanged: reuse the stored snapshot
+                    # instead of re-fetching. fetch_activity still normalizes it,
+                    # so events missing for this window are backfilled from it.
+                    skipped += 1
+                else:
+                    obj = self.gh.fetch_object(kind, number)
+                    meta = crawler_mod.upsert_object(self.conn, obj)
+                    if meta["is_new_local"]:
+                        self.newly_seen.add((kind, number))
+                    if kind == "pr" and crawler_mod.head_changed(meta):
+                        event_ids += self._emit_head_update(obj, meta)
+
                 self.object_cache[(kind, number)] = obj
-                meta = crawler_mod.upsert_object(self.conn, obj)
-                if meta["is_new_local"]:
-                    self.newly_seen.add((kind, number))
-
-                if kind == "pr" and crawler_mod.head_changed(meta):
-                    event_ids += self._emit_head_update(obj, meta)
-
                 synced.append(
                     {"repo": ref["repo"], "kind": kind, "number": number, "url": ref.get("url")}
                 )
-        log.info("Synced %d object(s); %d newly seen", len(synced), len(self.newly_seen))
+        log.info(
+            "Synced %d object(s); %d reused from db, %d newly seen",
+            len(synced), skipped, len(self.newly_seen),
+        )
         return {"synced_object_refs": synced, "event_ids": event_ids}
+
+    def _reusable_snapshot(self, ref: dict) -> dict | None:
+        """Stored snapshot for a candidate whose data is already in the db.
+
+        Returns the parsed snapshot only when it is provably current: the row
+        exists, the candidate's updated_at matches the stored one, and every
+        comment discovered for the candidate this run was already ingested as an
+        event. Anything less certain returns None, meaning fetch from GitHub.
+        """
+        row = self.conn.execute(
+            "SELECT updated_at, snapshot_json FROM objects WHERE repo=? AND kind=? AND number=?",
+            (ref["repo"], ref["kind"], ref["number"]),
+        ).fetchone()
+        if row is None or not row["snapshot_json"]:
+            return None
+        if not ref.get("updated_at") or ref["updated_at"] != row["updated_at"]:
+            # Unknown or changed updated_at: comment-discovered candidates carry
+            # no updated_at, and their known activity may not cover everything.
+            return None
+        for act in ref.get("activity", []):
+            eid = (
+                events_mod.eid_review_comment(ref["repo"], act["id"])
+                if act["type"] == "review_comment"
+                else events_mod.eid_comment(ref["repo"], act["id"])
+            )
+            known = self.conn.execute(
+                "SELECT 1 FROM events WHERE repo=? AND external_id=?",
+                (ref["repo"], eid),
+            ).fetchone()
+            if known is None:
+                return None
+        try:
+            return json.loads(row["snapshot_json"])
+        except (TypeError, ValueError):
+            return None
 
     def _emit_head_update(self, obj: dict, meta: dict) -> list[int]:
         old_sha, new_sha = meta["old_head_sha"], meta["new_head_sha"]
@@ -472,11 +520,14 @@ def run_pipeline(
     advance_cursor: bool = True,
     gh: GithubClient | None = None,
     summarizer: Summarizer | None = None,
+    force_update: bool = False,
 ) -> DigestState:
     """Run the full daily pipeline. Returns the final graph state.
 
     advance_cursor=False leaves github_last_successful_until untouched (used for
     explicit single-date, range and crawl runs so they don't move the scheduler).
+    force_update=True re-fetches every candidate from GitHub even when its data
+    is already in the database (the default is to skip unchanged objects).
     """
     from . import net
 
@@ -486,7 +537,14 @@ def run_pipeline(
         gh = gh or GithubClient(config.github.token, config.github.repo)
         summarizer = summarizer or make_summarizer(config)
         pipeline = Pipeline(
-            config, conn, gh, summarizer, since=since, until=until, advance_cursor=advance_cursor
+            config,
+            conn,
+            gh,
+            summarizer,
+            since=since,
+            until=until,
+            advance_cursor=advance_cursor,
+            force_update=force_update,
         )
         graph = build_graph(pipeline)
         final: DigestState = graph.invoke({"repo": config.github.repo, "errors": []})

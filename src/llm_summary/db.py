@@ -34,9 +34,17 @@ def _schema_sql() -> str:
 
 
 def init_db(conn: sqlite3.Connection) -> None:
-    """Create all tables if they do not exist."""
+    """Create all tables if they do not exist, then apply in-place migrations."""
     conn.executescript(_schema_sql())
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Bring pre-existing databases up to the current schema."""
+    columns = {row["name"] for row in conn.execute("PRAGMA table_info(objects)")}
+    if "snapshot_json" not in columns:
+        conn.execute("ALTER TABLE objects ADD COLUMN snapshot_json TEXT")
 
 
 @contextmanager

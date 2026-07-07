@@ -26,6 +26,9 @@ CREATE TABLE IF NOT EXISTS objects (
     last_seen_at TEXT NOT NULL,
 
     raw_json TEXT,
+    -- Full normalized object dict (comments, reviews, files, ...) as fetched
+    -- last run, so an unchanged object can be re-processed without GitHub.
+    snapshot_json TEXT,
 
     PRIMARY KEY(repo, kind, number)
 );

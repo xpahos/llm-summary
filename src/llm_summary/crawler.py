@@ -57,12 +57,12 @@ INSERT INTO objects
     (repo, kind, number, title, body, state, author, url,
      created_at, updated_at, closed_at,
      head_sha, base_ref, head_ref, merged, merged_at,
-     first_seen_at, last_seen_at, raw_json)
+     first_seen_at, last_seen_at, raw_json, snapshot_json)
 VALUES
     (:repo, :kind, :number, :title, :body, :state, :author, :url,
      :created_at, :updated_at, :closed_at,
      :head_sha, :base_ref, :head_ref, :merged, :merged_at,
-     :first_seen_at, :last_seen_at, :raw_json)
+     :first_seen_at, :last_seen_at, :raw_json, :snapshot_json)
 ON CONFLICT(repo, kind, number) DO UPDATE SET
     title=excluded.title,
     body=excluded.body,
@@ -78,7 +78,8 @@ ON CONFLICT(repo, kind, number) DO UPDATE SET
     merged=excluded.merged,
     merged_at=excluded.merged_at,
     last_seen_at=excluded.last_seen_at,
-    raw_json=excluded.raw_json
+    raw_json=excluded.raw_json,
+    snapshot_json=excluded.snapshot_json
 """
 
 
@@ -118,6 +119,11 @@ def upsert_object(conn: sqlite3.Connection, obj: dict[str, Any]) -> dict[str, An
         "first_seen_at": first_seen_at,
         "last_seen_at": now,
         "raw_json": obj.get("raw_json"),
+        # The full normalized dict, so later runs can rebuild the object without
+        # re-fetching it from GitHub (raw_json is excluded — it's stored above).
+        "snapshot_json": json.dumps(
+            {k: v for k, v in obj.items() if k != "raw_json"}, default=str
+        ),
     }
     conn.execute(_UPSERT_SQL, row)
 

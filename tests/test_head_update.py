@@ -29,7 +29,8 @@ def test_head_change_creates_exactly_one_event(config, since_until):
     assert gh.compare_calls == 0
 
     # Run 2: head SHA changes -> exactly one pr_head_updated event + one compare call.
-    objects[("pr", 1234)] = make_pr(number=1234, head_sha="def456")
+    # A push always bumps updated_at on GitHub, so the fixture models that too.
+    objects[("pr", 1234)] = make_pr(number=1234, head_sha="def456", updated="2026-06-27T13:00:00Z")
     run_pipeline(config, since=since, until=until, gh=gh, summarizer=llm)
     assert _count_head_events(config) == 1
     assert gh.compare_calls == 1

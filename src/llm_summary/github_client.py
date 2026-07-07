@@ -11,6 +11,8 @@ import logging
 from datetime import datetime, timezone
 from typing import Any
 
+from .events import in_window as _in_window
+
 log = logging.getLogger("llm_summary.github")
 
 
@@ -22,12 +24,16 @@ def _iso(dt: datetime | None) -> str | None:
     return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
-def _safe(fn, default):
-    """Call a zero-arg function, returning default on any error (sub-resource fetch)."""
+def _safe(fn, default, what: str = ""):
+    """Call a zero-arg function, returning default on any error (sub-resource fetch).
+
+    A failure here silently degrades the fetched object (e.g. an empty review list),
+    so always log what was being fetched to make the gap diagnosable.
+    """
     try:
         return fn()
     except Exception as exc:  # pragma: no cover - network failure path
-        log.warning("sub-resource fetch failed: %s", exc)
+        log.warning("sub-resource fetch failed (%s): %s", what or "unknown", exc)
         return default
 
 
@@ -83,6 +89,107 @@ class GithubClient:
                 )
         return candidates
 
+    def discover_candidates(self, since: datetime, until: datetime) -> list[dict[str, Any]]:
+        """Search-based candidates supplemented by repo-wide comment activity.
+
+        The search index alone is not sufficient: inline review comments do not
+        bump a PR's updated_at (so the PR never matches the `updated:` range),
+        and the index itself can lag behind the live data. Listing the repo's
+        review/issue comments directly catches both cases. Each candidate also
+        carries the comment activity discovered for it ("activity"), so callers
+        can verify those comments are already ingested before skipping a fetch.
+        """
+        candidates = self.search_candidates(since, until)
+        by_number: dict[int, dict[str, Any]] = {c["number"]: c for c in candidates}
+
+        for act in self._comment_activity(since, until):
+            existing = by_number.get(act["number"])
+            if existing is not None:
+                existing.setdefault("activity", []).append(
+                    {"type": act["type"], "id": act["id"]}
+                )
+                continue
+            kind = act["kind"] or self._resolve_kind(act["number"])
+            if kind is None:
+                continue
+            path = "pull" if kind == "pr" else "issues"
+            candidate = {
+                "repo": self.repo_name,
+                "kind": kind,
+                "number": act["number"],
+                "url": f"https://github.com/{self.repo_name}/{path}/{act['number']}",
+                "created_at": None,
+                "updated_at": None,
+                "activity": [{"type": act["type"], "id": act["id"]}],
+            }
+            by_number[act["number"]] = candidate
+            candidates.append(candidate)
+            log.info(
+                "Comment activity revealed %s #%s missing from search results",
+                kind, act["number"],
+            )
+        return candidates
+
+    def _comment_activity(self, since: datetime, until: datetime) -> list[dict[str, Any]]:
+        """Repo-wide review/issue comments created within [since, until).
+
+        The `since` filter is server-side (on comment updated_at); creation time
+        is filtered here so edits of old comments don't produce candidates.
+        """
+        out: list[dict[str, Any]] = []
+
+        review_comments = _safe(
+            lambda: list(self.repo.get_pulls_comments(sort="created", since=since)),
+            [],
+            what=f"{self.repo_name} pulls comments since {since:%Y-%m-%d}",
+        )
+        for c in review_comments:
+            raw = c.raw_data
+            created = _iso(c.created_at)
+            pr_url = raw.get("pull_request_url") or ""
+            if not pr_url or not _in_window(created, since, until):
+                continue
+            out.append(
+                {
+                    "number": int(pr_url.rsplit("/", 1)[1]),
+                    "kind": "pr",
+                    "type": "review_comment",
+                    "id": c.id,
+                    "created_at": created,
+                }
+            )
+
+        issue_comments = _safe(
+            lambda: list(self.repo.get_issues_comments(sort="created", since=since)),
+            [],
+            what=f"{self.repo_name} issues comments since {since:%Y-%m-%d}",
+        )
+        for c in issue_comments:
+            raw = c.raw_data
+            created = _iso(c.created_at)
+            issue_url = raw.get("issue_url") or ""
+            if not issue_url or not _in_window(created, since, until):
+                continue
+            out.append(
+                {
+                    "number": int(issue_url.rsplit("/", 1)[1]),
+                    "kind": None,  # issue vs PR resolved lazily, only when needed
+                    "type": "comment",
+                    "id": c.id,
+                    "created_at": created,
+                }
+            )
+        return out
+
+    def _resolve_kind(self, number: int) -> str | None:
+        """Whether #number is a PR or an issue (the issue-comments API can't tell)."""
+        issue = _safe(
+            lambda: self.repo.get_issue(number), None, what=f"issue #{number} kind lookup"
+        )
+        if issue is None:
+            return None
+        return "pr" if issue.raw_data.get("pull_request") else "issue"
+
     def _search(self, query: str):
         return self._gh_handle().search_issues(query=query)
 
@@ -110,7 +217,7 @@ class GithubClient:
             "created_at": _iso(issue.created_at),
             "updated_at": _iso(issue.updated_at),
             "closed_at": _iso(getattr(issue, "closed_at", None)),
-            "labels": [lbl.name for lbl in _safe(lambda: list(issue.labels), [])],
+            "labels": [lbl.name for lbl in _safe(lambda: list(issue.labels), [], what=f"labels #{getattr(issue, 'number', '?')}")],
         }
 
     def _comments(self, issue) -> list[dict[str, Any]]:
@@ -119,7 +226,7 @@ class GithubClient:
         # get_comments() is the conversation and get_issue_comments() does not exist.
         getter = getattr(issue, "get_issue_comments", None) or issue.get_comments
         out = []
-        for c in _safe(lambda: list(getter()), []):
+        for c in _safe(lambda: list(getter()), [], what=f"comments #{getattr(issue, 'number', '?')}"):
             out.append(
                 {
                     "id": c.id,
@@ -134,7 +241,7 @@ class GithubClient:
 
     def _timeline(self, issue) -> list[dict[str, Any]]:
         out = []
-        for ev in _safe(lambda: list(issue.get_timeline()), []):
+        for ev in _safe(lambda: list(issue.get_timeline()), [], what=f"timeline #{getattr(issue, 'number', '?')}"):
             label = None
             raw_label = getattr(ev, "label", None)
             if isinstance(raw_label, dict):
@@ -171,7 +278,7 @@ class GithubClient:
                 "files": [],
                 "checks": [],
                 "timeline": self._timeline(issue),
-                "raw_json": json.dumps(_safe(lambda: issue.raw_data, {}), default=str),
+                "raw_json": json.dumps(_safe(lambda: issue.raw_data, {}, what=f"raw #{number}"), default=str),
             }
         )
         return data
@@ -181,7 +288,7 @@ class GithubClient:
         data = self._common_issue_fields(pr)
         head_sha = getattr(getattr(pr, "head", None), "sha", None)
         reviews = []
-        for r in _safe(lambda: list(pr.get_reviews()), []):
+        for r in _safe(lambda: list(pr.get_reviews()), [], what=f"reviews #{number}"):
             reviews.append(
                 {
                     "id": r.id,
@@ -194,7 +301,7 @@ class GithubClient:
                 }
             )
         review_comments = []
-        for c in _safe(lambda: list(pr.get_review_comments()), []):
+        for c in _safe(lambda: list(pr.get_review_comments()), [], what=f"review comments #{number}"):
             review_comments.append(
                 {
                     "id": c.id,
@@ -207,7 +314,7 @@ class GithubClient:
                 }
             )
         commits = []
-        for cm in _safe(lambda: list(pr.get_commits()), []):
+        for cm in _safe(lambda: list(pr.get_commits()), [], what=f"commits #{number}"):
             commits.append(
                 {
                     "sha": cm.sha,
@@ -216,7 +323,7 @@ class GithubClient:
                 }
             )
         files = []
-        for f in _safe(lambda: list(pr.get_files()), []):
+        for f in _safe(lambda: list(pr.get_files()), [], what=f"files #{number}"):
             files.append(
                 {
                     "filename": f.filename,
@@ -240,7 +347,7 @@ class GithubClient:
                 "files": files,
                 "checks": self._check_runs(head_sha) if head_sha else [],
                 "timeline": self._timeline(pr),
-                "raw_json": json.dumps(_safe(lambda: pr.raw_data, {}), default=str),
+                "raw_json": json.dumps(_safe(lambda: pr.raw_data, {}, what=f"raw #{number}"), default=str),
             }
         )
         return data

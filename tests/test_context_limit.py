@@ -60,7 +60,8 @@ def test_one_poison_event_does_not_wedge_the_run(config, since_until):
     run_pipeline(config, since=since, until=until, gh=gh, summarizer=_BoomOnHeadSummarizer())
 
     # Run 2: head changes -> a pr_head_updated event whose update will "blow up".
-    objects[("pr", 1234)] = make_pr(1234, head_sha="def456")
+    # A push always bumps updated_at on GitHub, so the fixture models that too.
+    objects[("pr", 1234)] = make_pr(1234, head_sha="def456", updated="2026-06-27T13:00:00Z")
     state = run_pipeline(
         config, since=since, until=until,
         gh=FakeGithubClient(config.github.repo, objects),

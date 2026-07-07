@@ -62,7 +62,14 @@ def make_issue(number=999, created="2026-06-27T08:00:00Z", comments=None):
     }
 
 
-def make_pr(number=1234, created="2026-06-27T07:00:00Z", head_sha="abc123", labels=None, reviews=None):
+def make_pr(
+    number=1234,
+    created="2026-06-27T07:00:00Z",
+    head_sha="abc123",
+    labels=None,
+    reviews=None,
+    updated="2026-06-27T12:00:00Z",
+):
     return {
         "repo": REPO,
         "kind": "pr",
@@ -74,7 +81,7 @@ def make_pr(number=1234, created="2026-06-27T07:00:00Z", head_sha="abc123", labe
         "author_type": "User",
         "url": f"https://github.com/{REPO}/pull/{number}",
         "created_at": created,
-        "updated_at": "2026-06-27T12:00:00Z",
+        "updated_at": updated,
         "closed_at": None,
         "labels": ["OvmfPkg"] if labels is None else labels,
         "head_sha": head_sha,
@@ -108,6 +115,7 @@ class FakeGithubClient:
         self.repo_name = repo
         self.objects = objects  # {(kind, number): obj dict}
         self.compare_calls = 0
+        self.fetch_calls = 0
 
     def candidates(self):
         refs = []
@@ -127,7 +135,11 @@ class FakeGithubClient:
     def search_candidates(self, since, until):
         return self.candidates()
 
+    def discover_candidates(self, since, until):
+        return self.search_candidates(since, until)
+
     def fetch_object(self, kind, number):
+        self.fetch_calls += 1
         return copy.deepcopy(self.objects[(kind, number)])
 
     def compare(self, base_sha, head_sha):

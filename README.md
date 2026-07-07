@@ -84,6 +84,12 @@ Explicit `--date` / `--from`/`--to` runs (and `crawl`) **do not** move the curso
 backfilling or re-running an old day is safe and won't disturb the daily schedule. All
 windows are idempotent — re-processing a day inserts no duplicate events.
 
+Re-running a window skips objects whose data is already in the database (same
+`updated_at` and all discovered comments ingested); only new or changed objects are
+fetched from GitHub, and missing events are backfilled from the stored snapshot. Pass
+**`--force-update`** (`run-daily` and `crawl`) to bypass the check and re-fetch every
+crawled ticket.
+
 ### Re-rendering without re-crawling
 
 `render-latest` (most recent day) and `render-all` (every stored day, or a `--date` /

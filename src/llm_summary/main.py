@@ -82,7 +82,7 @@ def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
 
     # No date flags: the automatic daily window, which advances the cursor.
     if days is None:
-        result = run_pipeline(cfg)
+        result = run_pipeline(cfg, force_update=args.force_update)
         if result.get("errors"):
             log.error("Run finished with errors: %s", result["errors"])
             return 1
@@ -94,7 +94,9 @@ def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     for d in days:
         since, until = day_window(d)
         log.info("Processing %s", d.isoformat())
-        result = run_pipeline(cfg, since=since, until=until, advance_cursor=False)
+        result = run_pipeline(
+            cfg, since=since, until=until, advance_cursor=False, force_update=args.force_update
+        )
         if result.get("errors"):
             failed += 1
             log.error("Day %s finished with errors: %s", d.isoformat(), result["errors"])
@@ -108,7 +110,13 @@ def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
 def cmd_crawl(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     from .graph import run_pipeline
 
-    result = run_pipeline(cfg, since=args.since, until=args.until, advance_cursor=False)
+    result = run_pipeline(
+        cfg,
+        since=args.since,
+        until=args.until,
+        advance_cursor=False,
+        force_update=args.force_update,
+    )
     if result.get("errors"):
         log.error("Run finished with errors: %s", result["errors"])
         return 1
@@ -187,6 +195,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=_date_arg,
         help="End of an inclusive date range (YYYY-MM-DD); requires --from.",
     )
+    run_daily.add_argument(
+        "--force-update",
+        action="store_true",
+        help="Re-fetch and re-process every crawled ticket, even if its data "
+        "is already in the database.",
+    )
 
     sub.add_parser("render-latest", help="Re-render the most recent daily page.")
 
@@ -208,6 +222,12 @@ def build_parser() -> argparse.ArgumentParser:
     crawl = sub.add_parser("crawl", help="Run the pipeline over an explicit window.")
     crawl.add_argument("--since", required=True, help="ISO-8601 window start (inclusive).")
     crawl.add_argument("--until", required=True, help="ISO-8601 window end (exclusive).")
+    crawl.add_argument(
+        "--force-update",
+        action="store_true",
+        help="Re-fetch and re-process every crawled ticket, even if its data "
+        "is already in the database.",
+    )
 
     return parser
 
