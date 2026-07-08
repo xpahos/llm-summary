@@ -99,6 +99,79 @@ archive. They can only surface fields already stored when each day was generated
 added later needs a real `run-daily`. Navigational indexes are always rebuilt from the
 full `daily_pages` table, so rendering a subset never breaks the year/month/root listings.
 
+### Metrics (Prometheus Pushgateway)
+
+`run-daily` can optionally push per-run metrics to a Prometheus
+Pushgateway-compatible endpoint. Collection is **disabled by default** — without the
+flag, behavior is exactly as before:
+
+```bash
+llm-summary run-daily --collect-metrics                                # default gateway 127.0.0.1:50100
+llm-summary run-daily --collect-metrics --push-gateway 127.0.0.1:9091  # override the address
+```
+
+`--push-gateway` is only used together with `--collect-metrics`. Metrics are pushed
+once at the end of the run (`PUT http://<address>/metrics/job/llm_summary_daily` —
+a stable grouping key with no timestamps or run ids). Because the job runs once per
+day and every counter starts from zero, all metrics are exported as **gauges holding
+the final values of the current run**, not lifetime process counters:
+
+| Metric                                  | Meaning                                          |
+| --------------------------------------- | ------------------------------------------------ |
+| `daily_job_tasks_received`              | Unprocessed events picked up this run            |
+| `daily_job_tasks_processed`             | Events successfully folded into summaries        |
+| `daily_job_llm_requests`                | LLM calls made this run                          |
+| `daily_job_duration_seconds`            | Wall-clock duration of the run                   |
+| `daily_job_success`                     | `1` on success, `0` on failure                   |
+| `daily_job_last_run_timestamp_seconds`  | Unix timestamp of the run's completion           |
+| `daily_job_errors{stage,error_type}`    | Error counts by stage/type                       |
+
+#### Configuring the Pushgateway on the host
+
+On Debian/Ubuntu the `prometheus-pushgateway` package is configured through
+`/etc/default/prometheus-pushgateway`. To serve on the default address this tool
+expects (`127.0.0.1:50100`), set:
+
+```bash
+# /etc/default/prometheus-pushgateway
+ARGS="--web.listen-address=127.0.0.1:50100 --web.telemetry-path=/metrics --persistence.file=/var/lib/prometheus/pushgateway"
+```
+
+then restart the service (`sudo systemctl restart prometheus-pushgateway`).
+`--persistence.file` keeps pushed metrics across Pushgateway restarts, which matters
+here: the job pushes only once per day, so without persistence a restart would drop
+the last run's metrics until the next run.
+
+Binding to `127.0.0.1` makes the gateway reachable from the host only — exactly right
+when the job runs directly on the host (the default `--push-gateway 127.0.0.1:50100`
+then works as-is). If the job runs in Docker, a loopback-bound gateway is reachable
+via `host.docker.internal` on Docker Desktop (macOS/Windows), but **not** on Linux,
+where `host.docker.internal` maps to the bridge IP: there, either listen on an
+address containers can reach (e.g. the `docker0` IP, or `0.0.0.0` behind a firewall)
+or skip the host package and use the bundled compose `pushgateway` service instead
+(see the Docker note below).
+
+Error series use a small fixed label vocabulary only (stages `fetch_tasks`, `llm`,
+`processing`, `unknown`; types `http_5xx`, `timeout`, `rate_limit`,
+`invalid_response`, `invalid_task`, `unknown`) — never raw error messages, task ids
+or stack traces. Known combinations are always pushed, with value `0` when they did
+not occur, so Grafana sees continuous time series. Failed runs still make a
+best-effort push (`daily_job_success 0` plus duration and timestamp); a Pushgateway
+that is down never fails the job itself.
+
+> **Running in Docker?** The default `127.0.0.1:50100` points at the *container*,
+> not your host. For a Pushgateway on the host use
+> `--push-gateway host.docker.internal:50100` (the compose file maps
+> `host.docker.internal` on Linux too). Alternatively enable the commented-out
+> `pushgateway` service in `docker-compose.yml` and use
+> `--push-gateway pushgateway:9091`; its `50100:9091` port mapping keeps the
+> gateway reachable at `127.0.0.1:50100` from the host.
+
+```bash
+docker compose run --rm llm-summary run-daily --collect-metrics \
+    --push-gateway host.docker.internal:50100
+```
+
 ### Scheduling (cron)
 
 Run `run-daily` (no date flags) shortly after midnight UTC; each run produces the

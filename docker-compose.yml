@@ -20,9 +20,21 @@ services:
     # Desktop (macOS/Windows) host.docker.internal already resolves; this mapping
     # adds it on Linux too. Set the proxy to e.g. socks5h://host.docker.internal:1080
     # (NOT localhost, which inside the container points at the container itself).
+    # The same applies to a Pushgateway on the host: run-daily --collect-metrics
+    # --push-gateway host.docker.internal:50100 (the default 127.0.0.1:50100 would
+    # point at the container itself).
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: ["run-daily"]
+
+  # Optional: Prometheus Pushgateway for per-run job metrics
+  # (`run-daily --collect-metrics`). When enabled as a Compose service, pass
+  # `--push-gateway pushgateway:9091` (service name); the 50100 mapping also
+  # exposes it on the host at 127.0.0.1:50100 for Prometheus to scrape.
+  # pushgateway:
+  #   image: prom/pushgateway:latest
+  #   ports:
+  #     - "50100:9091"
 
   # Optional: serve the generated archive. Out of scope for the MVP pipeline,
   # but the dedicated /site volume makes it a drop-in.

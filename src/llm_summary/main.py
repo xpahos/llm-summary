@@ -5,10 +5,12 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from datetime import date, datetime, timedelta, timezone
 
 from . import config as config_mod
 from . import db as db_mod
+from .metrics import DEFAULT_PUSHGATEWAY
 
 log = logging.getLogger("llm_summary")
 
@@ -71,7 +73,7 @@ def cmd_init_db(cfg: config_mod.Config, args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
+def _run_daily(cfg: config_mod.Config, args: argparse.Namespace, metrics) -> int:
     from .graph import run_pipeline
 
     try:
@@ -82,7 +84,7 @@ def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
 
     # No date flags: the automatic daily window, which advances the cursor.
     if days is None:
-        result = run_pipeline(cfg, force_update=args.force_update)
+        result = run_pipeline(cfg, force_update=args.force_update, metrics=metrics)
         if result.get("errors"):
             log.error("Run finished with errors: %s", result["errors"])
             return 1
@@ -95,7 +97,12 @@ def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
         since, until = day_window(d)
         log.info("Processing %s", d.isoformat())
         result = run_pipeline(
-            cfg, since=since, until=until, advance_cursor=False, force_update=args.force_update
+            cfg,
+            since=since,
+            until=until,
+            advance_cursor=False,
+            force_update=args.force_update,
+            metrics=metrics,
         )
         if result.get("errors"):
             failed += 1
@@ -105,6 +112,28 @@ def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
         return 1
     log.info("Processed %d day(s).", len(days))
     return 0
+
+
+def cmd_run_daily(cfg: config_mod.Config, args: argparse.Namespace) -> int:
+    if not args.collect_metrics:
+        return _run_daily(cfg, args, metrics=None)
+
+    from . import metrics as metrics_mod
+
+    collector = metrics_mod.MetricsCollector()
+    started = time.monotonic()
+    rc = 1
+    try:
+        rc = _run_daily(cfg, args, metrics=collector)
+        return rc
+    except BaseException as exc:
+        collector.record_exception("unknown", exc)
+        raise
+    finally:
+        # Best-effort finalization: failed runs still push success=0, the
+        # elapsed duration and the run timestamp so they are visible in Grafana.
+        collector.finalize(success=(rc == 0), duration_seconds=time.monotonic() - started)
+        collector.push(args.push_gateway)
 
 
 def cmd_crawl(cfg: config_mod.Config, args: argparse.Namespace) -> int:
@@ -200,6 +229,19 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Re-fetch and re-process every crawled ticket, even if its data "
         "is already in the database.",
+    )
+    run_daily.add_argument(
+        "--collect-metrics",
+        action="store_true",
+        help="Collect per-run metrics and push them to a Prometheus Pushgateway "
+        "at the end of the run (disabled by default).",
+    )
+    run_daily.add_argument(
+        "--push-gateway",
+        default=DEFAULT_PUSHGATEWAY,
+        metavar="ADDRESS",
+        help="Pushgateway host:port used with --collect-metrics "
+        "(default: %(default)s).",
     )
 
     sub.add_parser("render-latest", help="Re-render the most recent daily page.")

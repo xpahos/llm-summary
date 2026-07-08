@@ -77,6 +77,7 @@ class Pipeline:
         until: str | None = None,
         advance_cursor: bool = True,
         force_update: bool = False,
+        metrics=None,
     ):
         self.config = config
         self.conn = conn
@@ -86,6 +87,7 @@ class Pipeline:
         self._until_arg = until
         self.advance_cursor = advance_cursor
         self.force_update = force_update
+        self.metrics = metrics
 
         self.since_dt: datetime | None = None
         self.until_dt: datetime | None = None
@@ -227,6 +229,8 @@ class Pipeline:
         rows = self.conn.execute(
             "SELECT * FROM events WHERE processed = 0 ORDER BY created_at, id"
         ).fetchall()
+        if self.metrics is not None:
+            self.metrics.inc_tasks_received(len(rows))
         # Each event is processed in its own transaction so a single failure (e.g.
         # an LLM error) cannot roll back the whole batch or wedge the queue. A
         # failed event is left unprocessed to retry next run, while the rest make
@@ -257,8 +261,12 @@ class Pipeline:
                     self._save_summary(ev["repo"], kind, number, updated, last_event_id=ev["id"])
                     self.conn.execute("UPDATE events SET processed = 1 WHERE id = ?", (ev["id"],))
                 processed += 1
+                if self.metrics is not None:
+                    self.metrics.inc_tasks_processed()
             except Exception as exc:  # noqa: BLE001 - isolate per-event failures
                 failed += 1
+                if self.metrics is not None:
+                    self.metrics.record_exception("processing", exc)
                 log.warning(
                     "process_events: skipping event %s (%s #%s %s): %s",
                     ev["id"], kind, number, ev["event_type"], exc,
@@ -464,12 +472,30 @@ _WORK_ORDER = [
 ]
 
 
-def _wrap(name: str, fn: Callable[[DigestState], DigestState]) -> Callable[[DigestState], DigestState]:
+# Stage label for daily_job_errors when a whole node fails. LLM failures are
+# classified as stage="llm" by the CountingSummarizer before reaching this map.
+_NODE_STAGE = {
+    "load_window": "fetch_tasks",
+    "fetch_candidates": "fetch_tasks",
+    "sync_objects": "fetch_tasks",
+    "fetch_activity": "fetch_tasks",
+    "bootstrap_object_summaries": "processing",
+    "process_events": "processing",
+    "build_daily_view_model": "processing",
+    "render_static_site": "processing",
+}
+
+
+def _wrap(
+    name: str, fn: Callable[[DigestState], DigestState], metrics=None
+) -> Callable[[DigestState], DigestState]:
     def node(state: DigestState) -> DigestState:
         try:
             return fn(state)
         except Exception as exc:  # noqa: BLE001 - convert to routed failure
             log.exception("Node %s failed", name)
+            if metrics is not None:
+                metrics.record_exception(_NODE_STAGE.get(name, "unknown"), exc)
             return {"errors": list(state.get("errors", [])) + [f"{name}: {exc}"]}
 
     return node
@@ -492,7 +518,7 @@ def build_graph(pipeline: Pipeline):
         "fail_run": pipeline.fail_run,
     }
     for name, fn in methods.items():
-        g.add_node(name, _wrap(name, fn))
+        g.add_node(name, _wrap(name, fn, pipeline.metrics))
 
     g.set_entry_point("load_window")
 
@@ -521,6 +547,7 @@ def run_pipeline(
     gh: GithubClient | None = None,
     summarizer: Summarizer | None = None,
     force_update: bool = False,
+    metrics=None,
 ) -> DigestState:
     """Run the full daily pipeline. Returns the final graph state.
 
@@ -528,6 +555,8 @@ def run_pipeline(
     explicit single-date, range and crawl runs so they don't move the scheduler).
     force_update=True re-fetches every candidate from GitHub even when its data
     is already in the database (the default is to skip unchanged objects).
+    metrics, when given, is a metrics.MetricsCollector that accumulates per-run
+    counters (tasks, LLM requests, classified errors); None disables collection.
     """
     from . import net
 
@@ -536,6 +565,10 @@ def run_pipeline(
     try:
         gh = gh or GithubClient(config.github.token, config.github.repo)
         summarizer = summarizer or make_summarizer(config)
+        if metrics is not None:
+            from .metrics import CountingSummarizer
+
+            summarizer = CountingSummarizer(summarizer, metrics)
         pipeline = Pipeline(
             config,
             conn,
@@ -545,6 +578,7 @@ def run_pipeline(
             until=until,
             advance_cursor=advance_cursor,
             force_update=force_update,
+            metrics=metrics,
         )
         graph = build_graph(pipeline)
         final: DigestState = graph.invoke({"repo": config.github.repo, "errors": []})

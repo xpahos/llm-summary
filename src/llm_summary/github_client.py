@@ -346,18 +346,27 @@ class GithubClient:
                 "commits": commits,
                 "files": files,
                 "checks": self._check_runs(head_sha) if head_sha else [],
-                "timeline": self._timeline(pr),
+                # PullRequest has no get_timeline(); the timeline (labeled,
+                # assigned, ...) lives on the PR's Issue facade.
+                "timeline": self._pr_timeline(pr, number),
                 "raw_json": json.dumps(_safe(lambda: pr.raw_data, {}, what=f"raw #{number}"), default=str),
             }
         )
         return data
 
+    def _pr_timeline(self, pr, number: int) -> list[dict[str, Any]]:
+        """Timeline for a PR via its Issue facade (PullRequest lacks get_timeline)."""
+        issue_view = _safe(lambda: pr.as_issue(), None, what=f"as_issue #{number}")
+        if issue_view is None:
+            return []
+        return self._timeline(issue_view)
+
     def _check_runs(self, sha: str) -> list[dict[str, Any]]:
         out = []
-        commit = _safe(lambda: self.repo.get_commit(sha), None)
+        commit = _safe(lambda: self.repo.get_commit(sha), None, what=f"commit {sha[:12]}")
         if commit is None:
             return out
-        for cr in _safe(lambda: list(commit.get_check_runs()), []):
+        for cr in _safe(lambda: list(commit.get_check_runs()), [], what=f"check runs {sha[:12]}"):
             out.append(
                 {
                     "id": cr.id,
