@@ -355,14 +355,28 @@ class Pipeline:
             "ORDER BY created_at, id",
             (state["repo"], since_iso, until_iso),
         ).fetchall()
-        # Include synthetic head-update events even if their created_at sits at run time.
-        head_rows = self.conn.execute(
-            "SELECT * FROM events WHERE repo=? AND event_type=? AND seen_at >= ?",
-            (state["repo"], events_mod.PR_HEAD_UPDATED, state["since"]),
-        ).fetchall()
+        # Include this run's synthetic head-update events even when their
+        # created_at sits at run time (outside the window). They are selected by
+        # the exact event ids inserted during this run — never by seen_at/run
+        # time, which would keep matching the same events on every later day.
+        run_event_ids = state.get("event_ids") or []
+        head_rows: list = []
+        for i in range(0, len(run_event_ids), 500):
+            chunk = run_event_ids[i : i + 500]
+            placeholders = ",".join("?" * len(chunk))
+            head_rows += self.conn.execute(
+                f"SELECT * FROM events WHERE event_type=? AND id IN ({placeholders})",
+                [events_mod.PR_HEAD_UPDATED, *chunk],
+            ).fetchall()
 
         by_key: dict[tuple[str, int], dict[str, Any]] = {}
+        seen_event_ids: set[int] = set()
         for ev in [dict(r) for r in rows] + [dict(r) for r in head_rows]:
+            # A head-update whose created_at falls inside the window appears in
+            # both queries; count it once.
+            if ev["id"] in seen_event_ids:
+                continue
+            seen_event_ids.add(ev["id"])
             key = (ev["object_kind"], ev["object_number"])
             entry = by_key.setdefault(
                 key,
