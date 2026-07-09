@@ -142,14 +142,11 @@ then restart the service (`sudo systemctl restart prometheus-pushgateway`).
 here: the job pushes only once per day, so without persistence a restart would drop
 the last run's metrics until the next run.
 
-Binding to `127.0.0.1` makes the gateway reachable from the host only — exactly right
-when the job runs directly on the host (the default `--push-gateway 127.0.0.1:50100`
-then works as-is). If the job runs in Docker, a loopback-bound gateway is reachable
-via `host.docker.internal` on Docker Desktop (macOS/Windows), but **not** on Linux,
-where `host.docker.internal` maps to the bridge IP: there, either listen on an
-address containers can reach (e.g. the `docker0` IP, or `0.0.0.0` behind a firewall)
-or skip the host package and use the bundled compose `pushgateway` service instead
-(see the Docker note below).
+Binding to `127.0.0.1` keeps the gateway private to the host. The compose file runs
+the job with `network_mode: host`, so the container shares the host's network stack
+and a loopback-bound gateway is reachable at plain `127.0.0.1:50100` — the
+`--push-gateway` default works unchanged both on the host and inside Docker (see the
+Docker note below).
 
 Error series use a small fixed label vocabulary only (stages `fetch_tasks`, `llm`,
 `processing`, `unknown`; types `http_5xx`, `timeout`, `rate_limit`,
@@ -159,17 +156,18 @@ not occur, so Grafana sees continuous time series. Failed runs still make a
 best-effort push (`daily_job_success 0` plus duration and timestamp); a Pushgateway
 that is down never fails the job itself.
 
-> **Running in Docker?** The default `127.0.0.1:50100` points at the *container*,
-> not your host. For a Pushgateway on the host use
-> `--push-gateway host.docker.internal:50100` (the compose file maps
-> `host.docker.internal` on Linux too). Alternatively enable the commented-out
-> `pushgateway` service in `docker-compose.yml` and use
-> `--push-gateway pushgateway:9091`; its `50100:9091` port mapping keeps the
-> gateway reachable at `127.0.0.1:50100` from the host.
+> **Running in Docker?** The compose service uses `network_mode: host`, so the
+> container shares the host's network stack and the host Pushgateway on
+> `127.0.0.1:50100` is reachable directly — no `--push-gateway` override needed.
+> If you switch the service back to bridge networking (e.g. on Docker Desktop
+> without host-networking support), `127.0.0.1` points at the *container*
+> instead: re-enable the `extra_hosts` mapping in `docker-compose.yml`, pass
+> `--push-gateway host.docker.internal:50100`, and make the gateway listen on an
+> address containers can reach (a loopback-only binding is not reachable from
+> bridge networks on Linux).
 
 ```bash
-docker compose run --rm llm-summary run-daily --collect-metrics \
-    --push-gateway host.docker.internal:50100
+docker compose run --rm llm-summary run-daily --collect-metrics
 ```
 
 ### Scheduling (cron)
@@ -288,10 +286,11 @@ corporate networks). The URL is normalized per client — `requests`/PyGithub ge
 `socks5h`, while the LLM's `httpx` client gets `socks5` (which also resolves remotely).
 Credentials embedded in the URL are redacted in logs.
 
-> **Running in Docker?** A proxy on your host machine is **not** reachable as
-> `localhost` from inside the container — that points at the container itself. Use
-> `host.docker.internal` instead, e.g. `socks5h://host.docker.internal:1080`. The compose
-> file maps `host.docker.internal` so this works on Linux as well as Docker Desktop.
+> **Running in Docker?** The compose service uses `network_mode: host`, so a proxy
+> on the host is reachable as `localhost`, e.g. `socks5h://127.0.0.1:1080`. With
+> bridge networking instead (no `network_mode: host`), `localhost` points at the
+> container itself — re-enable the `extra_hosts` mapping in `docker-compose.yml`
+> and use `socks5h://host.docker.internal:1080`.
 
 ## Data model (SQLite)
 
