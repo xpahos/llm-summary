@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
@@ -164,12 +165,33 @@ class OpenAISummarizer:
             self._client = ChatOpenAI(**kwargs)
         return self._client
 
+    _CHAT_ATTEMPTS = 3
+
     def _chat(self, user: str, system: str = _SYSTEM) -> str:
-        resp = self.client.invoke([("system", system), ("human", user)])
-        content = resp.content
-        if isinstance(content, list):  # some providers return content parts
-            content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
-        return content or ""
+        # OpenAI intermittently returns 401 "insufficient permissions" on a key
+        # that served the previous request seconds earlier; the SDK only retries
+        # 408/429/5xx, so retry those 401s here or one flake aborts the run.
+        import openai
+
+        last_exc: Exception | None = None
+        for attempt in range(1, self._CHAT_ATTEMPTS + 1):
+            if last_exc is not None:
+                delay = 2**attempt
+                log.warning(
+                    "LLM call failed (%s); retrying in %ds (attempt %d/%d)",
+                    last_exc, delay, attempt, self._CHAT_ATTEMPTS,
+                )
+                time.sleep(delay)
+            try:
+                resp = self.client.invoke([("system", system), ("human", user)])
+            except (openai.AuthenticationError, openai.PermissionDeniedError) as exc:
+                last_exc = exc
+                continue
+            content = resp.content
+            if isinstance(content, list):  # some providers return content parts
+                content = "".join(part.get("text", "") if isinstance(part, dict) else str(part) for part in content)
+            return content or ""
+        raise last_exc
 
     # --- task 1 ------------------------------------------------------------
     def initial_object_summary(self, obj: dict[str, Any]) -> str:
