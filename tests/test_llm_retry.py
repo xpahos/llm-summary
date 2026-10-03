@@ -70,3 +70,40 @@ def test_chat_success_needs_no_retry(config):
     client = _FlakyClient(failures=0)
     assert _summarizer(config, client)._chat("hello") == "summary text"
     assert client.calls == 1
+
+
+VALID_VM = '{"date": "2026-09-01", "repo": "r", "sections": []}'
+
+
+class _ScriptedClient:
+    """Returns the given responses in order and records invoke kwargs."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.kwargs = []
+
+    def invoke(self, messages, **kwargs):
+        self.kwargs.append(kwargs)
+        content = self.responses.pop(0)
+
+        class Resp:
+            pass
+
+        r = Resp()
+        r.content = content
+        return r
+
+
+def test_view_model_retries_malformed_json(config):
+    client = _ScriptedClient(['{"date": "2026-09-01" "repo": "r"}', VALID_VM])
+    vm = _summarizer(config, client).daily_view_model({"date": "2026-09-01"})
+    assert vm.date == "2026-09-01"
+    assert len(client.kwargs) == 2
+    assert all(k == {"response_format": {"type": "json_object"}} for k in client.kwargs)
+
+
+def test_view_model_gives_up_after_max_attempts(config):
+    client = _ScriptedClient(["{broken"] * 10)
+    with pytest.raises(ValueError, match="invalid daily view model JSON"):
+        _summarizer(config, client).daily_view_model({"date": "2026-09-01"})
+    assert len(client.kwargs) == OpenAISummarizer._VIEW_MODEL_ATTEMPTS

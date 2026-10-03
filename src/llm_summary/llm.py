@@ -166,8 +166,9 @@ class OpenAISummarizer:
         return self._client
 
     _CHAT_ATTEMPTS = 3
+    _VIEW_MODEL_ATTEMPTS = 3
 
-    def _chat(self, user: str, system: str = _SYSTEM) -> str:
+    def _chat(self, user: str, system: str = _SYSTEM, json_mode: bool = False) -> str:
         # OpenAI intermittently returns 401 "insufficient permissions" on a key
         # that served the previous request seconds earlier; the SDK only retries
         # 408/429/5xx, so retry those 401s here or one flake aborts the run.
@@ -183,7 +184,11 @@ class OpenAISummarizer:
                 )
                 time.sleep(delay)
             try:
-                resp = self.client.invoke([("system", system), ("human", user)])
+                messages = [("system", system), ("human", user)]
+                if json_mode:
+                    resp = self.client.invoke(messages, response_format={"type": "json_object"})
+                else:
+                    resp = self.client.invoke(messages)
             except (openai.AuthenticationError, openai.PermissionDeniedError) as exc:
                 last_exc = exc
                 continue
@@ -349,8 +354,21 @@ class OpenAISummarizer:
             "highlights:[string], sections:[{id,title,items:[{kind,number,title,"
             "badges:[string],summary,activity:[string],status,changed_files:[string]}]}]}"
         )
-        raw = self._chat(_compose(task, payload, output))
-        return _parse_view_model(raw, payload)
+        # gpt-4o occasionally emits malformed JSON for large digests even in JSON
+        # mode; one bad sample must not fail the whole day, so re-ask.
+        prompt = _compose(task, payload, output)
+        for attempt in range(1, self._VIEW_MODEL_ATTEMPTS + 1):
+            raw = self._chat(prompt, json_mode=True)
+            try:
+                return _parse_view_model(raw, payload)
+            except ValueError:
+                if attempt == self._VIEW_MODEL_ATTEMPTS:
+                    raise
+                log.warning(
+                    "Retrying daily view model (attempt %d/%d)",
+                    attempt + 1, self._VIEW_MODEL_ATTEMPTS,
+                )
+        raise AssertionError("unreachable")
 
 
 def _maybe_json(value: str | None) -> Any:
