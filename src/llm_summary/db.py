@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sqlite3
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
 from importlib import resources
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Iterator
 
 SCHEMA_RESOURCE = "schema.sql"
@@ -38,6 +39,22 @@ def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(_schema_sql())
     _migrate(conn)
     conn.commit()
+
+
+def export_snapshot(conn: sqlite3.Connection, destination: Path) -> None:
+    """Atomically publish a standalone snapshot of committed data, including WAL."""
+    if conn.in_transaction:
+        raise ValueError("Cannot export a database with an active transaction")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    # Stage on the same filesystem so replace is atomic. A failed backup or
+    # replacement leaves the previous download intact and cleans up staging.
+    with TemporaryDirectory(prefix=".snapshot-", dir=destination.parent) as staging:
+        temporary = Path(staging) / destination.name
+        with closing(sqlite3.connect(temporary)) as snapshot:
+            conn.backup(snapshot)
+            snapshot.execute("PRAGMA journal_mode=DELETE")
+        temporary.chmod(0o644)
+        temporary.replace(destination)
 
 
 def _migrate(conn: sqlite3.Connection) -> None:

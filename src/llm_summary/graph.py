@@ -596,6 +596,14 @@ def run_pipeline(
         )
         graph = build_graph(pipeline)
         final: DigestState = graph.invoke({"repo": config.github.repo, "errors": []})
+        if not final.get("errors"):
+            from .renderer import publish_database_dump
+
+            # Include finish_run's committed status and cursor in the download.
+            # Export failures can be retried with render-latest without crawling
+            # or summarizing the successfully processed window again.
+            paths = publish_database_dump(conn, config)
+            final["output_paths"] = final.get("output_paths", []) + [str(p) for p in paths]
         return final
     finally:
         conn.close()

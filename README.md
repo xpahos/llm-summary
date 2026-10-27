@@ -223,7 +223,17 @@ site/
   2026/06/28/pr/1234/index.html
   2026/06/28/issue/999/index.html
   assets/style.css
+  dump/llm-summary.sqlite
 ```
+
+The home page links to a full SQLite snapshot in `dump/llm-summary.sqlite`, with
+its size and update time. Successful pipeline runs publish it after saving the
+final run status and cursor; `render-latest` and `render-all` refresh it too.
+Even a date-filtered re-render exports the entire database, including every table.
+The snapshot uses SQLite's backup API to include committed WAL data and is
+atomically replaced, so downloads never read a partially written snapshot.
+If export fails, the previous snapshot remains available. A completed pipeline's
+cursor stays advanced; retry publication with `render-latest`.
 
 ## Configuration
 

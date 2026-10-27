@@ -46,6 +46,10 @@ def assets_dir(site_dir: str | Path) -> Path:
     return Path(site_dir) / "assets"
 
 
+def database_dump(site_dir: str | Path) -> Path:
+    return Path(site_dir) / "dump" / "llm-summary.sqlite"
+
+
 def day_url(d: date) -> str:
     y, m, day = _date_parts(d)
     return f"/{y}/{m}/{day}/"

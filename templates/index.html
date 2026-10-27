@@ -4,6 +4,10 @@
 <div class="day-header">
   <h1>{{ title }}</h1>
   {% if subtitle %}<p class="lead">{{ subtitle }}</p>{% endif %}
+  {% if dump %}
+  <p><a href="{{ dump.href }}" download>Download SQLite database</a> ({{ dump.size | filesizeformat(true) }})</p>
+  <p class="item-meta">Snapshot updated {{ dump.updated_at }} · All stored data</p>
+  {% endif %}
 </div>
 
 {% if links %}

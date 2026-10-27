@@ -6,13 +6,13 @@ import json
 import logging
 import shutil
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from . import paths as paths_mod
 from .config import Config, base_dir
-from .db import utcnow_iso
+from .db import export_snapshot, utcnow_iso
 from .llm import DayViewModel
 
 log = logging.getLogger("llm_summary.renderer")
@@ -157,6 +157,15 @@ def _render_indexes(conn: sqlite3.Connection, config: Config, env) -> list[Path]
     days = [dict(r) for r in rows]
     written: list[Path] = []
     index_tmpl = env.get_template("index.html")
+    dump_path = paths_mod.database_dump(site_dir)
+    dump = None
+    if dump_path.is_file():
+        stat = dump_path.stat()
+        dump = {
+            "href": dump_path.relative_to(site_dir).as_posix(),
+            "size": stat.st_size,
+            "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).strftime("%Y-%m-%d %H:%M UTC"),
+        }
 
     # Root index: list of years.
     years = sorted({r["date"][:4] for r in days}, reverse=True)
@@ -172,6 +181,7 @@ def _render_indexes(conn: sqlite3.Connection, config: Config, env) -> list[Path]
                 subtitle=f"{config.github.repo} daily archive",
                 links=root_links,
                 recent=recent,
+                dump=dump,
             ),
         )
     )
@@ -229,6 +239,13 @@ def _render_indexes(conn: sqlite3.Connection, config: Config, env) -> list[Path]
     return written
 
 
+def publish_database_dump(conn: sqlite3.Connection, config: Config) -> list[Path]:
+    """Publish the full database and refresh the download link and metadata."""
+    destination = paths_mod.database_dump(config.storage.site_dir)
+    export_snapshot(conn, destination)
+    return [destination, *_render_indexes(conn, config, _env())]
+
+
 def render_latest(conn: sqlite3.Connection, config: Config) -> list[Path]:
     """Re-render the most recent day from its stored view model."""
     row = conn.execute(
@@ -238,7 +255,9 @@ def render_latest(conn: sqlite3.Connection, config: Config) -> list[Path]:
         return []
     vm = DayViewModel.model_validate(json.loads(row["payload_json"]))
     d = date.fromisoformat(row["date"])
-    return render_day(conn, config, vm, d, row["run_id"])
+    written = render_day(conn, config, vm, d, row["run_id"])
+    written += publish_database_dump(conn, config)
+    return written
 
 
 def render_all(
@@ -270,5 +289,7 @@ def render_all(
         vm = DayViewModel.model_validate(json.loads(row["payload_json"]))
         d = date.fromisoformat(row["date"])
         written += render_day(conn, config, vm, d, row["run_id"])
+    if rows:
+        written += publish_database_dump(conn, config)
     log.info("Re-rendered %d day(s) from stored data", len(rows))
     return written
